@@ -87,6 +87,13 @@ final class QueueController: UIViewController, UITableViewDelegate {
         didSet { updateBar() }
     }
 
+    private var quickOperation: QuickOperationIntent? {
+        didSet { updateBar() }
+    }
+    private weak var quickSource: UIViewController?
+    private weak var quickInterface: InterfaceHostController?
+    private var queueVisible = false
+
     private var bootstrapRequested = false
     /// Install Anyway was chosen on a system with no dpkg: the packages'
     /// scripts are looked for once every file is here.
@@ -99,6 +106,8 @@ final class QueueController: UIViewController, UITableViewDelegate {
 
     /// The plan the page last showed, to tell a new one from a redraw.
     private var shownPlan: ResolutionPlan?
+    /// The revision actually drawn, which can lag the plan while a list update waits.
+    private var displayedRevision: Int?
     private var failure: String?
 
     /// Where the queue stands, for the button to know what its tap means.
@@ -177,7 +186,7 @@ final class QueueController: UIViewController, UITableViewDelegate {
             UIDeferredMenuElement.uncached { [weak self] completion in
                 // nothing to offer beside Cancel Auto Install
                 guard let self, let plan = PackageQueue.shared.plan, !committed,
-                      plan.allowsBootstrapInstall
+                      quickOperation == nil, plan.allowsBootstrapInstall
                 else { return completion([]) }
                 completion([UIAction(
                     title: String(localized: "Bootstrap Install"),
@@ -206,7 +215,21 @@ final class QueueController: UIViewController, UITableViewDelegate {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        queueVisible = true
+        if stage == .ready, let quickOperation, let plan = PackageQueue.shared.plan {
+            continueQuickOperation(quickOperation, plan: plan)
+        }
         presentScriptWarning()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        queueVisible = false
+        // LocalAuthentication is a system prompt, not a navigation away
+        // from this page. A real disappearance takes back the shortcut.
+        if quickOperation?.waitsOnQueue == true {
+            cancelQuickOperation(.leftQueue)
+        }
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -226,6 +249,9 @@ final class QueueController: UIViewController, UITableViewDelegate {
         guard isViewLoaded else { return }
         let manager = PackageQueue.shared
         let plan = manager.plan
+        if let quickOperation, quickOperation.plan != plan?.id || manager.blocked != nil {
+            cancelQuickOperation(.planChanged)
+        }
         if plan?.id != shownPlan?.id {
             committed = false
             forgetChecks()
@@ -253,7 +279,7 @@ final class QueueController: UIViewController, UITableViewDelegate {
         // staging runs to its end, and a failure stays until Retry or a new
         // plan
         let failed = stage == .downloadFailed || stage == .stagingFailed
-        if stage == .staging || (failure != nil && failed) {
+        if quickOperation != nil || stage == .staging || (failure != nil && failed) {
             return
         }
         follow(plan)
@@ -280,6 +306,7 @@ final class QueueController: UIViewController, UITableViewDelegate {
             snapshot.appendSections([.notices(manager.notices.uniqued().joined(separator: "\n\n"))])
         }
         snapshot.reconfigureItems(survivingFrom: dataSource.snapshot())
+        displayedRevision = manager.revision
         dataSource.apply(snapshot, animatingDifferences: animated)
     }
 
@@ -288,7 +315,7 @@ final class QueueController: UIViewController, UITableViewDelegate {
     /// its own, and Retry after a failure.
     private func updateBar() {
         let queued = PackageQueue.shared.plan != nil
-        let autoInstall = stage == .downloading && committed
+        let autoInstall = stage == .downloading && (committed || quickOperation != nil)
         let busy = stage == .staging
         let retries = stage == .downloadFailed || stage == .stagingFailed
         executeButton.title = if retries {
@@ -415,14 +442,14 @@ final class QueueController: UIViewController, UITableViewDelegate {
         }
     }
 
-    /// Every package leaves the queue with a swipe, through the change
-    /// sheet: a dependency takes the requests that need it along.
+    /// A direct request can leave without a sheet when the solver drops
+    /// only that row. Dependencies and other side effects still show a preview.
     func tableView(
         _: UITableView,
         trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
         guard case let .change(change) = dataSource.itemIdentifier(for: indexPath),
-              !Installer.shared.inProcessingQueue
+              let revision = displayedRevision, canPresentWithdrawal
         else { return nil }
         let action = UIContextualAction(
             style: .normal,
@@ -430,13 +457,99 @@ final class QueueController: UIViewController, UITableViewDelegate {
         ) { [weak self] _, _, completion in
             completion(true)
             guard let self else { return }
-            Task { await QueueChangeController.show(.withdraw(change.package.identity), from: self) }
+            Task {
+                let takesPlainChanges = change.requested && self.canWithdrawWithoutPreview(at: revision)
+                await QueueChangeController.$takesPlainChanges.withValue(takesPlainChanges) {
+                    await QueueChangeController.show(.withdraw(change.package.identity), from: self)
+                }
+            }
         }
         action.backgroundColor = .swipeDelete
-        return UISwipeActionsConfiguration(actions: [action])
+        let configuration = UISwipeActionsConfiguration(actions: [action])
+        configuration.performsFirstActionWithFullSwipe = false
+        return configuration
+    }
+
+    var canPresentWithdrawal: Bool {
+        queueVisible && Self.canPresent(from: self) && !committed && quickOperation == nil
+            && staging == nil && !Installer.shared.inProcessingQueue
+    }
+
+    /// The queue can change, or Execute can be tapped, while the withdrawal solves.
+    func canWithdrawWithoutPreview(at revision: Int) -> Bool {
+        let queue = PackageQueue.shared
+        return canPresentWithdrawal && revision == queue.revision && queue.blocked == nil
     }
 
     // MARK: - Download and execute
+
+    /// The preview authorizes one plan. Use this same controller to follow
+    /// downloads even when its page does not need to open.
+    func startQuickOperation(_ intent: QuickOperationIntent, plan: ResolutionPlan, from source: UIViewController) {
+        guard let interface = InterfaceHostController.enclosing(source), interface.queuePage === self,
+              !committed, staging == nil, !Installer.shared.inProcessingQueue,
+              PackageQueue.shared.blocked == nil, intent.plan == PackageQueue.shared.plan?.id,
+              QueueInstallChecks.hasDpkg(plan), Self.canPresent(from: source)
+        else { return }
+        cancelQuickOperation(.cancelled)
+        quickInterface = interface
+        quickSource = source
+        quickOperation = intent
+        shownPlan = plan
+        failure = nil
+        scriptWarning = nil
+        forgetChecks()
+        follow(plan, shortcut: intent)
+    }
+
+    func cancelQuickOperation(_ reason: QuickOperationIntent.Stop) {
+        quickOperation?.stop(reason)
+        clearQuickOperation()
+    }
+
+    private func clearQuickOperation() {
+        quickOperation = nil
+        quickSource = nil
+        quickInterface = nil
+    }
+
+    private static func canPresent(from source: UIViewController) -> Bool {
+        source.viewIfLoaded?.window != nil && source.presentedViewController == nil
+            && (source.navigationController?.topViewController ?? source) === source
+    }
+
+    private func openQueue(for intent: QuickOperationIntent) {
+        guard quickOperation === intent, !intent.waitsOnQueue else { return }
+        let manager = PackageQueue.shared
+        guard intent.canStart(plan: manager.plan?.id, blocked: manager.blocked != nil) else {
+            return cancelQuickOperation(.planChanged)
+        }
+        guard let interface = quickInterface, interface.queuePage === self,
+              let source = quickSource, Self.canPresent(from: source)
+        else { return cancelQuickOperation(.leftQueue) }
+        intent.waitOnQueue()
+        interface.selectQueue()
+    }
+
+    private func quickPresenter(_ intent: QuickOperationIntent) -> UIViewController? {
+        let manager = PackageQueue.shared
+        guard quickOperation === intent, quickInterface?.queuePage === self,
+              intent.canContinue(plan: manager.plan?.id, blocked: manager.blocked != nil, queueVisible: queueVisible),
+              let presenter = intent.waitsOnQueue ? self : quickSource, Self.canPresent(from: presenter)
+        else { return nil }
+        return presenter
+    }
+
+    private func continueQuickOperation(_ intent: QuickOperationIntent, plan: ResolutionPlan) {
+        guard stage == .ready, quickOperation === intent else { return }
+        // The files can arrive during the transition into the Queue page.
+        if intent.waitsOnQueue, !queueVisible { return }
+        guard quickPresenter(intent) != nil, QueueInstallChecks.hasDpkg(plan) else {
+            cancelQuickOperation(.cancelled)
+            return
+        }
+        stageAndRun(plan, bootstrapInstall: false, shortcut: intent)
+    }
 
     /// Execute: Retry repeats what failed, Cancel Auto Install
     /// takes a committed tap back, otherwise the tap commits the plan, now
@@ -449,9 +562,10 @@ final class QueueController: UIViewController, UITableViewDelegate {
             failure = nil
             Downloads.shared.download(plan.install)
             reload()
-        case .downloading where committed:
+        case .downloading where committed || quickOperation != nil:
             // Cancel Auto Install: the downloads go on, the install waits
             // for the next tap
+            cancelQuickOperation(.cancelled)
             committed = false
             forgetChecks()
         case .stagingFailed, .ready, .downloading:
@@ -478,7 +592,7 @@ final class QueueController: UIViewController, UITableViewDelegate {
             }
         }
         // the queue moved on while the alert was up
-        guard PackageQueue.shared.plan?.id == plan.id, !committed else { return }
+        guard PackageQueue.shared.plan?.id == plan.id, !committed, quickOperation == nil else { return }
         bootstrapRequested = bootstrap
         installsWithoutDpkg = withoutDpkg
         scriptsAccepted = false
@@ -544,84 +658,151 @@ final class QueueController: UIViewController, UITableViewDelegate {
     }
 
     /// Follows the plan's missing files; each row follows its own.
-    private func follow(_ plan: ResolutionPlan) {
+    private func follow(_ plan: ResolutionPlan, shortcut: QuickOperationIntent? = nil) {
         // one watch per plan: an earlier one waking later would stage again
         watch?.cancel()
         watch = nil
         let pending = plan.install.filter { $0.localFileURL == nil }
         guard !pending.isEmpty else {
             stage = .ready
+            if let shortcut { continueQuickOperation(shortcut, plan: plan) }
             return
         }
         stage = .downloading
         refreshVisibleProgress()
+        let onTransfer: (@MainActor () -> Void)?
+        if let shortcut {
+            onTransfer = { [weak self] in self?.openQueue(for: shortcut) }
+        } else {
+            onTransfer = nil
+        }
         watch = Task { [weak self] in
-            let failure = await Downloads.shared.awaitFiles(of: pending, in: plan.id) { [weak self] in
+            let failure = await Downloads.shared.awaitFiles(of: pending, in: plan.id, onTransfer: onTransfer) { [weak self] in
                 self?.refreshVisibleProgress()
             }
             // a plan that replaced this one has a watch of its own
-            guard !Task.isCancelled, let self, PackageQueue.shared.plan?.id == plan.id else { return }
+            guard !Task.isCancelled, let self else { return }
             watch = nil
+            guard PackageQueue.shared.plan?.id == plan.id, PackageQueue.shared.blocked == nil else {
+                if let shortcut, quickOperation === shortcut { cancelQuickOperation(.planChanged) }
+                return reload()
+            }
             refreshVisibleProgress()
             if let failure {
+                var source: UIViewController?
+                if let shortcut, quickOperation === shortcut {
+                    if !shortcut.waitsOnQueue { source = quickPresenter(shortcut) }
+                    cancelQuickOperation(.downloadFailed)
+                }
                 Dog.shared.join("Queue", "download failed: \(failure)", level: .error)
                 let purchased = pending.contains { $0.latestMetadata?["tag"]?.contains("cydia::commercial") ?? false }
-                self.failure = purchased
+                let report = purchased
                     ? failure + "\n" + String(localized: "A purchased package's download link expires. Remove it from the queue and add it again.")
                     : failure
+                self.failure = report
                 committed = false
                 stage = .downloadFailed
                 reload()
+                // A cache or directory error can happen before any transfer.
+                // Leave the source page in place and offer the original Retry.
+                source?.presentConfirmation(
+                    title: "Download Failed",
+                    message: .init(report),
+                    confirmTitle: "Open Queue"
+                ) { [weak source] in
+                    guard let source, PackageQueue.shared.plan?.id == plan.id, Self.canPresent(from: source) else { return }
+                    InterfaceHostController.enclosing(source)?.selectQueue()
+                }
                 return
             }
             if committed {
                 run(plan)
             } else {
                 stage = .ready
+                if let shortcut { continueQuickOperation(shortcut, plan: plan) }
             }
         }
     }
 
-    private func stageAndRun(_ plan: ResolutionPlan, bootstrapInstall: Bool) {
+    private func stageAndRun(_ plan: ResolutionPlan, bootstrapInstall: Bool, shortcut: QuickOperationIntent? = nil) {
         failure = nil
         guard !Installer.shared.inProcessingQueue else {
-            return stagingFailed(
-                String(localized: "Another operation is already running. Wait for it to finish, then try again.")
+            let presenter = shortcut.flatMap { quickPresenter($0) }
+            if shortcut != nil { cancelQuickOperation(.cancelled) }
+            return reportStagingFailure(
+                String(localized: "Another operation is already running. Wait for it to finish, then try again."),
+                from: presenter, shortcut: shortcut, plan: plan.id
             )
         }
         stage = .staging
         staging = Task { [weak self] in
             // the owner says yes before anything is staged; a cancel leaves
             // the queue as it was, every file still here
-            guard await OperationConfirmation.confirm() else {
-                guard let self else { return }
+            let confirmed = await OperationConfirmation.confirm()
+            guard let self else { return }
+            guard confirmed, shortcut.map({ quickPresenter($0) != nil }) ?? true else {
                 staging = nil
+                if let shortcut, quickOperation === shortcut { cancelQuickOperation(.cancelled) }
                 committed = false
                 stage = .ready
                 return reload()
             }
+            // Keep only a display source across preparation; this never grants execution.
+            let failureSource = shortcut.flatMap { quickPresenter($0) }
             let payload = await Installer.shared.createOperationPayload(
                 plan: plan,
                 bootstrapInstall: bootstrapInstall
             )
-            guard let self else { return }
-            staging = nil
-            // a page left while staging ran has nothing to present on
-            guard view.window != nil else {
-                stage = .empty
-                return reload()
+            finishStaging(payload, plan: plan.id, shortcut: shortcut, failureSource: failureSource)
+        }
+    }
+
+    /// The actual async preparation completion boundary. Error display may
+    /// survive an invalid intent; execution still requires `quickPresenter`.
+    func finishStaging(
+        _ payload: Installer.OperationPayload?, plan: UUID, shortcut: QuickOperationIntent?,
+        failureSource: UIViewController?
+    ) {
+        staging = nil
+        let presenter = shortcut.flatMap { quickPresenter($0) } ?? (shortcut == nil ? self : nil)
+        if let shortcut, quickOperation === shortcut { clearQuickOperation() }
+        guard let payload, !payload.transaction.stages.isEmpty else {
+            shortcut?.stop(.cancelled)
+            let source = shortcut == nil ? presenter : failureSource
+            let visibleSource = source.flatMap { Self.canPresent(from: $0) ? $0 : nil }
+            reportStagingFailure(
+                PackageActionReport.shared.allAvailable(), alertTitle: PackageActionReport.shared.alertTitle,
+                from: visibleSource, shortcut: shortcut, plan: plan
+            )
+            return
+        }
+        guard let presenter, presenter.viewIfLoaded?.window != nil else {
+            stage = .empty
+            return reload()
+        }
+        showConsole(payload, from: presenter, shortcut: shortcut)
+    }
+
+    /// Preparation can fail before a shortcut ever opens Queue. Keep its
+    /// report there too, but give the current source the same native exit.
+    func reportStagingFailure(
+        _ report: String, alertTitle: String? = nil, from presenter: UIViewController?,
+        shortcut: QuickOperationIntent?, plan: UUID
+    ) {
+        let reason = report.isEmpty ? String(localized: "Unable to prepare this operation. Try again.") : report
+        stagingFailed(reason)
+        guard let presenter else { return }
+        if let alertTitle {
+            presenter.presentNotice(title: String.LocalizationValue(alertTitle), message: report)
+        } else if let shortcut, !shortcut.waitsOnQueue, !queueVisible {
+            presenter.presentConfirmation(
+                title: "Unable to prepare this operation. Try again.",
+                message: .init(reason),
+                confirmTitle: "Open Queue"
+            ) { [weak presenter] in
+                guard let presenter, PackageQueue.shared.plan?.id == plan, Self.canPresent(from: presenter) else { return }
+                InterfaceHostController.enclosing(presenter)?.selectQueue()
             }
-            guard let payload, !payload.transaction.stages.isEmpty else {
-                // staging said why in the report when it could
-                let report = PackageActionReport.shared.allAvailable()
-                stagingFailed(report.isEmpty ? String(localized: "Unable to prepare this operation. Try again.") : report)
-                // a reason that asked to be an alert is one as well as the row
-                if let title = PackageActionReport.shared.alertTitle {
-                    presentNotice(title: String.LocalizationValue(title), message: report)
-                }
-                return
-            }
-            showConsole(payload)
         }
     }
 
@@ -636,11 +817,12 @@ final class QueueController: UIViewController, UITableViewDelegate {
     /// its own: the iPad adds the navigation bar to a content size, the
     /// operation page has a large title and the log and the failed
     /// package's page have none, so the sheet would shrink on every push.
-    private func showConsole(_ payload: Installer.OperationPayload) {
-        let console = UINavigationController(rootViewController: OperationController(operation: payload))
-        console.modalPresentationStyle = traitCollection.userInterfaceIdiom == .pad ? .formSheet : .fullScreen
+    private func showConsole(_ payload: Installer.OperationPayload, from presenter: UIViewController, shortcut: QuickOperationIntent?) {
+        let operation = OperationController(operation: payload, quickOperation: shortcut)
+        let console = UINavigationController(rootViewController: operation)
+        console.modalPresentationStyle = presenter.traitCollection.userInterfaceIdiom == .pad ? .formSheet : .fullScreen
         committed = false
         stage = .empty
-        present(console, animated: true)
+        presenter.present(console, animated: true)
     }
 }

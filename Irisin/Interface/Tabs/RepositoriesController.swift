@@ -9,6 +9,7 @@
 import AptRepository
 import Combine
 import Dog
+import IrisinProtocol
 import SPIndicator
 import Then
 import UIKit
@@ -432,7 +433,12 @@ class RepositoriesController: UIViewController {
 
     @objc
     func openAdd() {
-        present(RepositoryAddController.sheet(), animated: true)
+        let recommendations = if PackagedArchitecture.architecture == BootstrapArchitecture.roothide.rawValue {
+            RecommendedRepositories.addSheetLines.compactMap(RepositorySource.init(line:))
+        } else {
+            [RepositorySource]()
+        }
+        present(RepositoryAddController.sheet(recommendations: recommendations), animated: true)
     }
 
     /// Pulling forces every repository and the control spins until the

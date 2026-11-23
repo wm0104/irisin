@@ -83,6 +83,10 @@ struct PeerAuthenticator {
         }
     }
 
+    func isOwnApplication(_ executable: String) -> Bool {
+        clientPaths.contains(executable) && isTrustedExecutable(executable)
+    }
+
     private func hasRequiredEntitlements(token: inout audit_token_t) -> Bool {
         IrisinWire.requiredClientEntitlements.allSatisfy { entitlement in
             let value = entitlement.withCString { irisinXPCCopyEntitlement($0, &token) }

@@ -42,12 +42,24 @@ class InterfaceHostController: UIViewController {
         return nil
     }
 
+    var queuePage: QueueController? {
+        if let split = current as? SplitInterfaceController {
+            return split.navigator.queue
+        }
+        return (current as? TabInterfaceController)?.queuePage
+    }
+
     /// Shows the Queue page: whatever sheet is up leaves, then the Queue
     /// card or tab is selected as a tap selects it.
     func openQueue() {
         if presentedViewController != nil {
             dismiss(animated: true)
         }
+        selectQueue()
+    }
+
+    /// Selects the existing Queue without dismissing a presentation.
+    func selectQueue() {
         (current as? SplitInterfaceController)?.showQueue()
         (current as? TabInterfaceController)?.showQueue()
     }
@@ -103,6 +115,7 @@ class InterfaceHostController: UIViewController {
         )
 
         if let current {
+            queuePage?.cancelQuickOperation(.leftQueue)
             current.willMove(toParent: nil)
             current.view.removeFromSuperview()
             current.removeFromParent()

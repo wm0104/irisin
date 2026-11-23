@@ -63,3 +63,7 @@ objc_retain_x9
 # which the compiler names only for a runtime that has it.
 swift_getTypeByMangledNameInContext2
 swift_getTypeByMangledNameInContextInMetadataState2
+# Swift 5.6 runtime, available from tvOS 15.4, not the iOS 15.0 floor.
+# swiftlang/swift@50794e1: RuntimeFunctions.def uses
+# ObjCIsUniquelyReferencedAvailability; Availability.cpp maps it to 15.4.
+swift_isUniquelyReferenced_nonNull_bridgeObject

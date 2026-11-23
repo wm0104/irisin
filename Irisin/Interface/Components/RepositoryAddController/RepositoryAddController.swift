@@ -14,15 +14,14 @@ import Then
 import UIKit
 
 /// The add-repository sheet. Add in the bar registers the source in the
-/// field. The clipboard, read on request, and History offer sources, each
+/// field. Recommendations, the clipboard and History offer sources, each
 /// with its own Add that registers it on the spot, after which the bar
-/// offers Done in Add's place until the field is typed in again. A source is a bare
-/// address or a sources.list line (`deb URL suite components`); the last
+/// offers Done in Add's place until the field is typed in again. A source is
+/// a bare address or a sources.list line (`deb URL suite components`); the last
 /// row hands over to the advanced sheet for typing the latter piecewise.
 class RepositoryAddController: UITableViewController {
     /// Where a section of offered sources came from. The sheet reads the
-    /// clipboard itself; a link and a file hand their sources over already
-    /// parsed.
+    /// clipboard itself; other callers hand their sources over already parsed.
     nonisolated enum Origin: Hashable {
         case clipboard
         case link
@@ -31,6 +30,7 @@ class RepositoryAddController: UITableViewController {
 
     nonisolated enum Section: Hashable {
         case pending
+        case recommended
         case paste
         case candidates(Origin)
         case history
@@ -45,6 +45,7 @@ class RepositoryAddController: UITableViewController {
     }
 
     private let initialInput: String?
+    private let recommendations: [String]
     private var inputText = ""
     /// The typed source being looked up, shown under the field.
     private var probing: String?
@@ -115,18 +116,21 @@ class RepositoryAddController: UITableViewController {
 
     /// The sheet the callers present: Cancel and Add over the list, half
     /// height on the iPhone until the list needs more.
-    static func sheet(initialInput: String? = nil) -> UINavigationController {
-        .halfSheet(root: RepositoryAddController(initialInput: initialInput))
+    static func sheet(initialInput: String? = nil, recommendations: [RepositorySource] = []) -> UINavigationController {
+        .halfSheet(root: RepositoryAddController(initialInput: initialInput, recommendations: recommendations))
     }
 
-    /// The same sheet with sources already found for the user to pick from,
-    /// in place of the row that reads the clipboard.
+    /// The same sheet with sources already found for the user to pick from.
     static func sheet(candidates: [RepositorySource], origin: Origin) -> UINavigationController {
         .halfSheet(root: RepositoryAddController(candidates: candidates.map(\.line), origin: origin))
     }
 
-    init(initialInput: String? = nil, candidates: [String] = [], origin: Origin = .clipboard) {
+    init(
+        initialInput: String? = nil, candidates: [String] = [], origin: Origin = .clipboard,
+        recommendations: [RepositorySource] = []
+    ) {
         self.initialInput = initialInput
+        self.recommendations = recommendations.map(\.line).uniqued()
         self.candidates = candidates
         candidateOrigin = origin
         super.init(style: .insetGrouped)
@@ -166,7 +170,7 @@ class RepositoryAddController: UITableViewController {
         dataSource.footerTitle = { section in
             switch section {
             case .pending: String(localized: "A repository can include apps, plugins, themes, and ringtones. Anyone can host one, and we cannot verify that its packages are safe.")
-            case .paste, .candidates: nil
+            case .paste, .recommended, .candidates: nil
             case .history: String(localized: "You added these repositories before. Swipe one to forget it.")
             case .advanced: String(localized: "For repositories that need a suite and components.")
             }
@@ -180,6 +184,7 @@ class RepositoryAddController: UITableViewController {
     private static func headerTitle(of section: Section) -> String? {
         switch section {
         case .pending: String(localized: "Repository URL")
+        case .recommended: String(localized: "Recommended Repositories")
         case .paste, .candidates(.clipboard): String(localized: "Clipboard")
         case .candidates(.link): String(localized: "From Link")
         case .candidates(.file): String(localized: "From File")
@@ -208,6 +213,7 @@ class RepositoryAddController: UITableViewController {
 
     private var sections: [Section] {
         [.pending]
+            + (recommendations.isEmpty ? [] : [.recommended])
             + (candidates.isEmpty ? [.paste] : [.candidates(candidateOrigin)])
             + (history.isEmpty ? [] : [.history])
             + [.advanced]
@@ -217,6 +223,7 @@ class RepositoryAddController: UITableViewController {
         switch section {
         case .pending: [.input] + (probing.map { [.candidate(.pending, $0)] } ?? [])
         case .paste: [.readClipboard]
+        case .recommended: recommendations.map { .candidate(.recommended, $0) }
         case .candidates: candidates.map { .candidate(section, $0) }
         case .history: history.map { .candidate(.history, $0) }
         case .advanced: [.advanced]
@@ -235,7 +242,7 @@ class RepositoryAddController: UITableViewController {
     /// Every row showing `line`, in whichever sections it appears.
     private func reconfigure(_ line: String) {
         var snapshot = dataSource.snapshot()
-        let rows = [Section.pending, .candidates(candidateOrigin), .history]
+        let rows = [Section.pending, .recommended, .candidates(candidateOrigin), .history]
             .map { Row.candidate($0, line) }
             .filter { snapshot.indexOfItem($0) != nil }
         guard !rows.isEmpty else { return }

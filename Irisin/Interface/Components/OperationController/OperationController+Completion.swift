@@ -90,19 +90,24 @@ extension OperationController {
                 UIAction(
                     title: String(localized: "Skip for Now"),
                     image: UIImage(systemName: "xmark")
-                ) { [weak self] _ in self?.dismiss(animated: true) },
+                ) { [weak self] _ in self?.skipHomeScreenReload() },
             ])
         )
         button.accessibilityHint = reason
         return button
     }
 
+    /// Leave this result alone and close the sheet, even after a retry push.
+    func skipHomeScreenReload() {
+        guard !retrying else { return }
+        let sheet = navigationController ?? self
+        sheet.dismiss(animated: true)
+    }
+
     /// The page closes, then the home screen restarts and this app with it.
     private func reloadHomeScreen() {
-        dismiss(animated: true) {
-            UIApplication.prepareForExitAndSuspend()
-            Task { await PrivilegedBackend.run(.respring) }
-        }
+        guard !retrying else { return }
+        dismiss(animated: true) { self.services.respring() }
     }
 
     private func rebuildIcons() {

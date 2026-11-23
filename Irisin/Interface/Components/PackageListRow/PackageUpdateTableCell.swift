@@ -7,9 +7,7 @@
 //
 
 import AptRepository
-import AptResolver
-import SDWebImage
-import SPIndicator
+import SnapKit
 import UIKit
 
 class PackageUpdateTableCell: UITableViewCell {
@@ -21,13 +19,16 @@ class PackageUpdateTableCell: UITableViewCell {
         }
     }
 
-    var updateCandidate: Package?
+    private var updateCandidate: Package? {
+        didSet { refreshUpdateAction() }
+    }
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         button.setImage(.fluent(.arrowUpCircle24Filled), for: .normal)
         button.accessibilityLabel = String(localized: "Update")
         button.addTarget(self, action: #selector(sendUpdate), for: .touchUpInside)
+        refreshUpdateAction()
         contentView.addSubview(button)
         contentView.addSubview(originalCell)
         updateSnapKitConstraints()
@@ -53,8 +54,14 @@ class PackageUpdateTableCell: UITableViewCell {
 
     @objc
     func sendUpdate() {
-        guard let package = updateCandidate, let host = parentViewController else { return }
-        Task { await PackageMenu.enqueue([.install(package)], from: host) }
+        guard let package = updateCandidate, let host = parentViewController,
+              let action = PackageMenu.eligibleAction(.update, for: package)
+        else { return }
+        Task { await action.block(package, host, nil) }
+    }
+
+    func refreshUpdateAction() {
+        button.isEnabled = updateCandidate.flatMap { PackageMenu.eligibleAction(.update, for: $0) } != nil
     }
 
     override func prepareForReuse() {

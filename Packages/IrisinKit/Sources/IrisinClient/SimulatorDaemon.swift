@@ -61,9 +61,20 @@
             // the file stays open for the job as the daemon's copy of it
             // does, whatever the caller does with its own
             let file = descriptor.map { dup($0) }
+            do {
+                if job.isConfigurationJob {
+                    guard let file else { throw IrisinFailure(code: .invalidRequest) }
+                    try job.validateConfigurationDescriptor(file)
+                }
+            } catch {
+                if let file, file >= 0 { close(file) }
+                throw error
+            }
             var ends: [Int32] = [-1, -1]
             guard pipe(&ends) == 0 else {
-                throw IrisinFailure(code: .operationFailed, systemError: errno)
+                let code = errno
+                if let file { close(file) }
+                throw IrisinFailure(code: .operationFailed, systemError: code)
             }
             // The helper ignores SIGPIPE so a reader that went away cannot kill
             // a half-finished transaction; here the writer is the app itself.
@@ -78,9 +89,15 @@
                 emit(.started(.init(job: job.name, uid: getuid(), installRoot: installRoot)))
                 let layout = BootstrapLayout(kind: .rootless(prefix: BootstrapLayout.rootlessPrefix), mount: installRoot)
                 let runner = InstallerRunner(installRoot: installRoot, layout: layout, emit: emit)
-                if let file {
+                if case .repack = job, let file {
+                    // The runner owns the repack descriptor and closes it.
                     runner.repackDescriptor = file
+                } else if job.isConfigurationJob, let file {
+                    runner.configurationDescriptor = file
+                } else if let file {
+                    close(file)
                 }
+                defer { if job.isConfigurationJob, let file { close(file) } }
                 let status = runner.run(job)
                 emit(.exit(status))
                 try? output.close()

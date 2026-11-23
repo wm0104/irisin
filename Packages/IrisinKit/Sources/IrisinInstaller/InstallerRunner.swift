@@ -25,6 +25,7 @@ public final class InstallerRunner {
     /// Where a repack's package goes: descriptor 3, which the daemon passed
     /// through. The simulator and the harness hand a file of their own.
     public var repackDescriptor = InstallerJob.repackDescriptor
+    public var configurationDescriptor = InstallerJob.repackDescriptor
     private let registrar: ApplicationRegistrar
     private let daemonManager: LaunchDaemon
     /// `ProcessTable.signal`, except in the harness: a Mac running a
@@ -110,6 +111,10 @@ public final class InstallerRunner {
             signal(SystemProcess.homeScreen, SIGSEGV)
         case .prepareUserHome:
             prepareUserHome()
+        case let .configurationRestore(preferences, sources):
+            runConfiguration(.configurationRestore(preferences: preferences, sources: sources))
+        case .configurationBackup:
+            runConfiguration(.configurationBackup)
         case let .repack(identity):
             repack(identity)
         case let .external(external):

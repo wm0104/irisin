@@ -36,7 +36,7 @@ extension PackageMenu {
     /// offer Update: no newer version, a blocked update, a package already
     /// in the queue. A commercial package is left out too: its download
     /// link is the vendor's answer to one purchase check, made on its own
-    /// page. This is the batch path and it skips `keeps(_:from:)`: that
+    /// page. This is the batch path and it skips the package alternative check: that
     /// alert talks about one package with its page one tap away, and a
     /// selection gets the candidate the Updates page would take.
     static func updateRequest(forInstalled row: Package) -> ResolutionAction? {

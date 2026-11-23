@@ -20,6 +20,7 @@ nonisolated enum RecommendedRepositories {
         let source: String
         var minimumSystemVersion: Int?
         var maximumSystemVersion: Int?
+        var showWhenAdding: Bool?
 
         func applies(to majorVersion: Int) -> Bool {
             if let minimumSystemVersion, majorVersion < minimumSystemVersion {
@@ -38,21 +39,27 @@ nonisolated enum RecommendedRepositories {
         "default-list-\(architecture)"
     }
 
-    /// The source lines for this app, as its bundle has them.
-    static var lines: [String] {
+    /// The onboarding recommendations for this app, as its bundle has them.
+    static var lines: [String] { bundledLines(forAddSheet: false) }
+
+    /// Only entries that opt in also appear in the add-source sheet.
+    static var addSheetLines: [String] { bundledLines(forAddSheet: true) }
+
+    private static func bundledLines(forAddSheet: Bool) -> [String] {
         guard let directory = Bundle.main.resourceURL else { return [] }
         return lines(
             in: directory,
             architecture: PackagedArchitecture.architecture,
-            majorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+            majorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+            forAddSheet: forAddSheet
         )
     }
 
-    static func lines(in directory: URL, architecture: String, majorVersion: Int) -> [String] {
+    static func lines(in directory: URL, architecture: String, majorVersion: Int, forAddSheet: Bool = false) -> [String] {
         let entries = entries(in: directory, named: managedName)
             ?? entries(in: directory, named: name(for: architecture))
             ?? []
-        return entries.filter { $0.applies(to: majorVersion) }.map(\.source)
+        return entries.filter { $0.applies(to: majorVersion) && (!forAddSheet || $0.showWhenAdding == true) }.map(\.source)
     }
 
     /// Nil for a list that is missing, empty or does not read, so the next

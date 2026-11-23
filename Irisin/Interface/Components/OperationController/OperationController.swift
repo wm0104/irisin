@@ -6,7 +6,7 @@ import UIKit
 /// The running operation, as the queue's own list: the same cards and rows
 /// the user just reviewed, each row now filling with its package's progress
 /// and counting it on a ring. The rows are the progress and the title says
-/// how it ended; a failure offers Try Again below the list,
+/// how it ended; Try Again and Skip for Now are offered below the list,
 /// and a line under the list fades in while the helper finishes
 /// after the last row. A package that stopped the operation turns red and
 /// opens the account of its failure; every row then says what is true of
@@ -30,7 +30,21 @@ final class OperationController: UIViewController, UITableViewDelegate {
         case notice(String)
     }
 
+    /// The system effects behind the page: starting an operation, asking the
+    /// owner to retry and reloading the home screen.
+    @MainActor
+    struct Services {
+        var begin: @MainActor (Installer.OperationPayload) -> OperationMonitor = { Installer.shared.beginOperation(operation: $0) }
+        var confirmRetry: @MainActor () async -> Bool = { await OperationConfirmation.confirm() }
+        var respring: @MainActor () -> Void = {
+            UIApplication.prepareForExitAndSuspend()
+            Task { await PrivilegedBackend.run(.respring) }
+        }
+    }
+
     private let operation: Installer.OperationPayload
+    private let quickOperation: QuickOperationIntent?
+    let services: Services
     var isRecoveryMode: Bool {
         operation.plan.recoveryMode
     }
@@ -66,32 +80,45 @@ final class OperationController: UIViewController, UITableViewDelegate {
     }
 
     private let retrySpinner = UIActivityIndicatorView(style: .medium)
-    private lazy var retryButton = UIButton(type: .system).then {
-        $0.setAttributedTitle(NSAttributedString(
-            string: String(localized: "Try Again"),
-            attributes: [
-                .font: UIFont.footnote,
-                .foregroundColor: UIColor.buttonNormal,
-                .underlineStyle: NSUnderlineStyle.single.rawValue,
-            ]
-        ), for: .normal)
-        $0.titleLabel?.numberOfLines = 0
-        $0.titleLabel?.textAlignment = .center
-        $0.addAction(UIAction { [weak self] _ in self?.retry() }, for: .touchUpInside)
-    }
+    private lazy var retryButton = resultButton(title: "Try Again") { [weak self] in self?.retry() }
+    private lazy var skipButton = resultButton(title: "Skip for Now") { [weak self] in self?.skipHomeScreenReload() }
 
-    private lazy var retryFooter = UIView().then { footer in
-        let stack = UIStackView(arrangedSubviews: [retryButton, retrySpinner])
+    private lazy var resultsFooter = UIView().then { footer in
+        let stack = UIStackView(arrangedSubviews: [retryButton, retrySpinner, skipButton])
         stack.axis = .vertical
         stack.alignment = .center
         stack.spacing = 4
+        footer.insetsLayoutMarginsFromSafeArea = false
         footer.addSubview(stack)
         stack.snp.makeConstraints { x in
-            x.edges.equalToSuperview().inset(UIEdgeInsets(top: 8, left: 20, bottom: 8, right: 20))
+            x.edges.equalTo(footer.layoutMarginsGuide)
         }
-        retryButton.snp.makeConstraints { x in
-            x.height.greaterThanOrEqualTo(44)
-            x.width.equalToSuperview()
+        for button in [retryButton, skipButton] {
+            button.snp.makeConstraints { x in
+                // A hidden arranged subview has a required zero height.
+                x.height.greaterThanOrEqualTo(44).priority(.high)
+                x.width.equalToSuperview()
+            }
+        }
+    }
+
+    private func resultButton(title: String.LocalizationValue, action: @escaping @MainActor () -> Void) -> UIButton {
+        let title = String(localized: title)
+        return UIButton(type: .system).then { button in
+            button.accessibilityLabel = title
+            button.titleLabel?.numberOfLines = 0
+            button.titleLabel?.textAlignment = .center
+            button.titleLabel?.lineBreakMode = .byWordWrapping
+            button.titleLabel?.font = .footnote
+            button.titleLabel?.adjustsFontForContentSizeCategory = true
+            let titleColors: [(UIControl.State, UIColor)] = [(.normal, .buttonNormal), (.disabled, .textMuted)]
+            for (state, color) in titleColors {
+                button.setAttributedTitle(NSAttributedString(string: title, attributes: [
+                    .foregroundColor: color,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                ]), for: state)
+            }
+            button.addAction(UIAction { _ in action() }, for: .touchUpInside)
         }
     }
 
@@ -102,8 +129,10 @@ final class OperationController: UIViewController, UITableViewDelegate {
     /// run is pushed, which has no way back to this page.
     private(set) var retrying = false {
         didSet {
-            view.setNeedsLayout()
+            retryButton.isEnabled = !retrying
+            skipButton.isEnabled = !retrying
             navigationItem.rightBarButtonItems?.forEach { $0.isEnabled = !retrying }
+            view.setNeedsLayout()
         }
     }
 
@@ -146,9 +175,16 @@ final class OperationController: UIViewController, UITableViewDelegate {
         }
     }
 
-    init(operation: Installer.OperationPayload, followsTweakChange: Bool = false) {
+    init(
+        operation: Installer.OperationPayload,
+        followsTweakChange: Bool = false,
+        quickOperation: QuickOperationIntent? = nil,
+        services: Services = .init()
+    ) {
         self.operation = operation
         self.followsTweakChange = followsTweakChange
+        self.quickOperation = quickOperation
+        self.services = services
         // read now: a finished operation empties the queue
         changes = QueueChange.changes(
             of: operation.plan,
@@ -167,7 +203,11 @@ final class OperationController: UIViewController, UITableViewDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = String(localized: "Installing")
+        let removesOnly = !operation.plan.remove.isEmpty && operation.plan.stages.allSatisfy {
+            if case .remove = $0 { return true }
+            return false
+        }
+        title = removesOnly ? String(localized: "Removing…") : String(localized: "Installing")
         isModalInPresentation = true
         navigationController?.isModalInPresentation = true
         navigationItem.largeTitleDisplayMode = .always
@@ -210,16 +250,25 @@ final class OperationController: UIViewController, UITableViewDelegate {
         updateOperationWarningBanner()
         let footer: UIView
         let height: CGFloat
-        if monitor?.outcome?.succeeded == false {
-            footer = retryFooter
-            retryButton.isEnabled = !retrying
-            retrySpinner.isHidden = !retrying
-            if retrying {
+        let showsRetry = monitor?.outcome?.succeeded == false
+        let showsSkip = monitor.map { $0.outcome != nil && ending(of: $0) == .reloadHomeScreen } ?? false
+        if showsRetry || showsSkip {
+            footer = resultsFooter
+            retryButton.isHidden = !showsRetry
+            skipButton.isHidden = !showsSkip
+            if showsRetry && retrying {
                 retrySpinner.startAnimating()
             } else {
                 retrySpinner.stopAnimating()
             }
-            height = retryFooter.systemLayoutSizeFitting(
+            retrySpinner.isHidden = !showsRetry || !retrying
+            resultsFooter.layoutMargins = UIEdgeInsets(
+                top: 8,
+                left: 20 + view.safeAreaInsets.left,
+                bottom: 8,
+                right: 20 + view.safeAreaInsets.right
+            )
+            height = resultsFooter.systemLayoutSizeFitting(
                 CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
                 withHorizontalFittingPriority: .required,
                 verticalFittingPriority: .fittingSizeLevel
@@ -239,8 +288,16 @@ final class OperationController: UIViewController, UITableViewDelegate {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         guard monitor == nil else { return }
+        if let quickOperation {
+            let queue = PackageQueue.shared
+            // The queue can move while this sheet is still animating in.
+            guard quickOperation.canStart(plan: queue.plan?.id, blocked: queue.blocked != nil) else {
+                dismiss(animated: true)
+                return
+            }
+        }
         appearedAt = Date()
-        let monitor = Installer.shared.beginOperation(operation: operation)
+        let monitor = services.begin(operation)
         self.monitor = monitor
         bind(monitor)
     }
@@ -252,7 +309,7 @@ final class OperationController: UIViewController, UITableViewDelegate {
     }
 
     /// The packages alone while the operation runs: the rows are the
-    /// progress. Warnings close the list; retry is the footer below it.
+    /// progress. Warnings close the list; result actions go below it.
     private func applySnapshot() {
         var snapshot = NSDiffableDataSourceSnapshot<Section, Row>()
         if Self.showsMaintenanceRow(changeCount: changes.count, outcome: monitor?.outcome) {
@@ -440,8 +497,9 @@ final class OperationController: UIViewController, UITableViewDelegate {
     private func retry(ignoreScriptFailures: Bool? = nil) {
         guard !retrying else { return }
         retrying = true
+        let confirmRetry = services.confirmRetry
         Task { [weak self] in
-            guard await OperationConfirmation.confirm() else {
+            guard await confirmRetry() else {
                 self?.retrying = false
                 return
             }

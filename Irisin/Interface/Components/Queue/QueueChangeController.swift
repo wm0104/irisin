@@ -9,6 +9,7 @@
 import AptRepository
 import AptResolver
 import Combine
+import IrisinProtocol
 import SPIndicator
 import UIKit
 
@@ -50,6 +51,7 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         /// The footer that closes the sheet. The text is the identity, so a
         /// new text is a new section and the table asks for it again.
         case note(String)
+        case queueOnly
     }
 
     nonisolated enum Row: Hashable {
@@ -62,9 +64,12 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         case move(QueueChange)
         /// Migrate and Update.
         case migrate
+        case queueOnly
     }
 
     private let request: Request
+    private let shortcut: QueueConfirmation.Shortcut?
+    private weak var source: UIViewController?
     private var proposal: PackageQueue.Proposal?
     private var failure: ResolutionFailure?
     /// The unneeded packages the user ticked; nil until the first answer,
@@ -82,12 +87,20 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
     /// Confirm was tapped and the answer is being held against the
     /// packages as they are now.
     private var confirming: Task<Void, Never>?
+    private var shortcutRender: UUID?
+    private var displayedShortcutPlan: UUID?
     private var subscriptions = Set<AnyCancellable>()
     private lazy var icons = PackageIconCache { [weak self] in self?.redraw() }
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private lazy var confirmButton = UIBarButtonItem(
         primaryAction: UIAction(title: String(localized: "Confirm")) { [weak self] _ in self?.commit() }
+    )
+    private lazy var shortcutButton = UIBarButtonItem(
+        primaryAction: UIAction(title: shortcut?.title ?? String(localized: "Confirm")) { [weak self] _ in
+            guard let self, let displayedShortcutPlan else { return }
+            commit(.execute(displayedShortcutPlan))
+        }
     )
     /// Stands in for Confirm when the request leaves the queue as it is:
     /// there is nothing to confirm, and the queue is where the user was going.
@@ -106,7 +119,7 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         cell.contentConfiguration = content(for: row)
         cell.selectionStyle = switch row {
         case let .cleanup(name): blockers(of: name).isEmpty ? .default : .none
-        case .migrate: .default
+        case .migrate, .queueOnly: .default
         default: .none
         }
         // a cleanup row's tick is an icon in its own content and nothing
@@ -115,31 +128,43 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         cell.accessibilityTraits = switch row {
         case let .cleanup(name) where !blockers(of: name).isEmpty: .notEnabled
         case let .cleanup(name): (ticked ?? []).contains(name) ? [.button, .selected] : .button
-        case .migrate: .button
+        case .migrate, .queueOnly: .button
         default: .staticText
         }
         cell.accessoryView = versionLabel(for: row, reusing: cell.accessoryView as? UILabel)
         return cell
     }
 
-    /// Set around a swipe's action (`PackageMenu.swipeConfiguration`): the
-    /// row the user swiped is all they saw, so an answer that changes the
-    /// queue by that package alone joins it without the sheet, and one
-    /// that brings anything along still shows it (`takeIfPlain`).
+    /// Set around a withdrawal swipe. A change to just that package can
+    /// be queued without a sheet (`takeIfPlain`).
     @TaskLocal static var takesPlainChanges = false
+
+    /// A scoped observer at the presentation boundary; normal UI uses `show` below.
+    @TaskLocal static var showCandidate: (@MainActor (Request, UIViewController, QueueConfirmation.Shortcut?, Bool) -> Void)? = nil
 
     /// Presents the sheet, after waiting a moment for the solver so a quick
     /// answer lands with it. A request that cannot be met has no changes to
     /// show: its report is the sheet, and closing the report closes it.
     /// Under `takesPlainChanges` the wait is longer, since an answer that
     /// needs no sheet shows none.
-    static func show(_ request: Request, from host: UIViewController) async {
-        let controller = QueueChangeController(request: request)
+    static func show(_ request: Request, from host: UIViewController, shortcut: QueueConfirmation.Shortcut? = nil) async {
+        if let showCandidate {
+            showCandidate(request, host, shortcut, takesPlainChanges)
+            return
+        }
+        let revision = PackageQueue.shared.revision
+        let shortcut: QueueConfirmation.Shortcut? = if case .updateAll = request { .batchUpdate } else { shortcut }
+        let controller = QueueChangeController(request: request, shortcut: takesPlainChanges ? nil : shortcut)
+        controller.source = host
         if takesPlainChanges {
             await controller.prepare(within: 1)
-            if await controller.takeIfPlain() { return }
+            if await controller.takeIfPlain(at: revision) { return }
         } else {
             await controller.prepare(within: 0.2)
+        }
+        // A slow swipe must not present a sheet on a Queue page the user left.
+        if case .withdraw = request, let queue = host as? QueueController, !queue.canPresentWithdrawal {
+            return
         }
         let root = controller.failure.map {
             report(of: $0, alone: true, recoveryPackage: controller.recoveryPackage, recoveryRemoval: controller.recoveryRemoval)
@@ -183,17 +208,22 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
               case let .remove(identity) = actions[0],
               let installed = PackageCenter.default.obtainPackageInstallationInfo(with: identity)?.representObject
         else { return nil }
-        let fields = installed.latestMetadata ?? [:]
-        guard fields["status"]?.hasPrefix("hold ") != true else { return nil }
-        let protected = fields["essential"] == "yes" || fields["protected"] == "yes"
-            || ["apt", "dpkg", "essential", "firmware", "bash", "coreutils",
-                "base", "base-files", "base-passwd", "libroot", "roothide"].contains(installed.identity)
-        guard PackageQueue.shared.allowSystemRemoval || !protected else { return nil }
+        guard installed.latestMetadata?["status"]?.hasPrefix("hold ") != true,
+              PackageQueue.shared.allowSystemRemoval || !Self.isProtected(installed)
+        else { return nil }
         return installed.identity
     }
 
-    init(request: Request) {
+    private static func isProtected(_ package: Package) -> Bool {
+        let fields = package.latestMetadata ?? [:]
+        return fields["essential"] == "yes" || fields["protected"] == "yes"
+            || ["apt", "dpkg", "essential", "firmware", "bash", "coreutils",
+                "base", "base-files", "base-passwd", "libroot", "roothide"].contains(package.identity)
+    }
+
+    init(request: Request, shortcut: QueueConfirmation.Shortcut? = nil) {
         self.request = request
+        self.shortcut = shortcut
         super.init(nibName: nil, bundle: nil)
         solve()
     }
@@ -221,7 +251,7 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
             case .cleanup: String(localized: "No Longer Needed")
             case .dropped: String(localized: "No Longer Queued")
             case .migration: String(localized: "Needs Another Repository")
-            case .note: nil
+            case .note, .queueOnly: nil
             }
         }
         dataSource.footerTitle = { section in
@@ -232,7 +262,7 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
                 String(localized: "Held-back updates need these packages from a repository other than the one each was installed from. Migrate and Update installs them from there, and their updates come from there afterwards.")
             case let .note(text):
                 text.isEmpty ? nil : text
-            case .changes, .dropped:
+            case .changes, .dropped, .queueOnly:
                 nil
             }
         }
@@ -250,6 +280,7 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         title = String(localized: "Queue Changes")
         if #available(iOS 26.0, *) {
             confirmButton.style = .prominent
+            shortcutButton.style = .prominent
             openQueueButton.style = .prominent
         }
 
@@ -338,7 +369,7 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         case let .failure(failure): return (.failure(failure), nil)
         }
         var actions = update.actions
-        var notices = update.notices
+        var notices = update.notices + update.diagnostics
         if case .migrate = request, let migration = update.migration {
             actions = migration.actions
             notices.append(String(localized: "The packages that change repository are installed from the new one, and their updates come from there afterwards."))
@@ -363,10 +394,100 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         unneeded[name, default: []].filter { !(ticked ?? []).contains($0) }
     }
 
-    private func commit() {
-        guard confirming == nil else { return }
+    private var shortcutPlan: ResolutionPlan? {
+        guard let shortcut, work == nil, failure == nil,
+              let proposal, let plan = proposal.plan, proposal.notices.isEmpty, proposal.cleanup.isEmpty,
+              plan.heldBack.isEmpty, plan.diagnostics.isEmpty, plan.migration == nil,
+              migration?.moves.isEmpty != false,
+              !plan.recoveryMode, !plan.repairsInstalledSet, QueueInstallChecks.hasDpkg(plan),
+              let source, InterfaceHostController.enclosing(source)?.queuePage != nil
+        else { return nil }
+        let manager = PackageQueue.shared
+        let empty = manager.plan == nil && manager.actions.isEmpty && manager.cleanup.isEmpty && manager.blocked == nil
+        if case .batchUpdate = shortcut {
+            return empty && Self.isPlainBatchUpdate(plan, actions: proposal.actions) ? plan : nil
+        }
+        guard proposal.actions.count == 1, let action = proposal.actions.first else { return nil }
+        switch (shortcut, action) {
+        case let (.install(wanted), .install(requested)) where requested.identity == wanted:
+            let installs = Set(plan.install.map(\.identity))
+            let plain = plan.install.contains(requested) && plan.remove.isEmpty
+                && installs.isDisjoint(with: plan.snapshot.installed.map(\.identity))
+                && plan.install.allSatisfy { $0 == requested || $0.localFileURL == nil }
+                && Self.stagesOnlyTouch(installs, in: plan)
+            return QueueConfirmation.offersInstall(
+                requested: wanted, queueIsEmpty: empty, isPlainInstall: plain,
+                installs: installs, requiredBy: plan.requiredBy
+            ) ? plan : nil
+        case let (.versionChange(change, wanted), .install(requested)) where requested.identity == wanted:
+            guard let installed = plan.snapshot.installed.first(where: { $0.identity == wanted }),
+                  let target = plan.install.first, target == requested
+            else { return nil }
+            let plain = Self.canReplaceInstalledPackage(installed, with: target) && plan.remove.isEmpty
+                && plan.stages == [.unpack([wanted]), .configure([wanted])]
+            return QueueConfirmation.offersVersionChange(
+                change, requested: wanted, queueIsEmpty: empty, isPlainChange: plain, installs: plan.install.map(\.identity),
+                installedVersion: installed.latestVersion, targetVersion: target.latestVersion,
+                origin: plan.snapshot.origins[wanted], targetRepository: target.repoRef, localArchive: target.localFileURL != nil
+            ) ? plan : nil
+        case let (.remove(wanted), .remove(requested)) where requested == wanted:
+            let plain = !wanted.hasPrefix(InstallerJob.selfIdentityPrefix)
+                && !plan.remove.contains(where: Self.isProtected) && plan.stages == [.remove([wanted])]
+            return QueueConfirmation.offersRemoval(
+                requested: wanted, queueIsEmpty: empty, isPlainRemoval: plain,
+                installsPackages: !plan.install.isEmpty, removals: plan.remove.map(\.identity),
+                offersCleanup: !plan.unneeded.isEmpty
+            ) ? plan : nil
+        default:
+            return nil
+        }
+    }
+
+    static func canReplaceInstalledPackage(_ installed: Package, with target: Package) -> Bool {
+        // An unfinished package can resolve to just unpack and configure as
+        // well, but repairing it keeps the ordinary confirmation flow.
+        installed.latestMetadata?["status"] == "install ok installed"
+            && !target.identity.hasPrefix(InstallerJob.selfIdentityPrefix)
+            && !isProtected(installed) && !isProtected(target)
+    }
+
+    private static func stagesOnlyTouch(_ installs: Set<String>, in plan: ResolutionPlan) -> Bool {
+        plan.stages.allSatisfy { stage in
+            if case .remove = stage { return false }
+            return Set(stage.identities).isSubset(of: installs)
+        }
+    }
+
+    static func isPlainBatchUpdate(_ plan: ResolutionPlan, actions: [ResolutionAction]) -> Bool {
+        guard plan.remove.isEmpty,
+              !plan.install.isEmpty, plan.install.count == actions.count,
+              Set(plan.install.map(\.identity)).count == actions.count
+        else { return false }
+        let requested = Set(actions.compactMap { action -> Package? in
+            guard case let .install(package) = action else { return nil }
+            return package
+        })
+        let installedByID = Dictionary(plan.snapshot.installed.map { ($0.identity, $0) }, uniquingKeysWith: { first, _ in first })
+        let identities = Set(plan.install.map(\.identity))
+        return requested == Set(plan.install) && stagesOnlyTouch(identities, in: plan)
+            && plan.install.allSatisfy { target in
+                guard let installed = installedByID[target.identity],
+                      let installedVersion = installed.latestVersion, let targetVersion = target.latestVersion,
+                      target.localFileURL == nil, !target.isCommercial,
+                      canReplaceInstalledPackage(installed, with: target)
+                else { return false }
+                return QueueConfirmation.matchesVersionChange(
+                    .update, installedVersion: installedVersion, targetVersion: targetVersion,
+                    origin: plan.snapshot.origins[target.identity], targetRepository: target.repoRef
+                )
+            }
+    }
+
+    private func commit(_ confirmation: QueueConfirmation = .queueOnly) {
+        guard confirming == nil, confirmation.accepts(plan: shortcutPlan?.id) else { return }
         if let work {
-            // a tick is still being solved: Confirm takes its answer
+            // Ordinary Confirm may follow a tick's new answer. A shortcut
+            // must instead wait for the user to confirm the new preview.
             Task { [weak self] in
                 await work.value
                 self?.commit()
@@ -382,14 +503,17 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
             confirming = nil
             // a tick or a queue that moved during the check: Confirm takes
             // what the sheet shows now
+            guard viewIfLoaded?.window != nil, navigationController?.isBeingDismissed != true else { return }
+            guard confirmation.accepts(plan: shortcutPlan?.id) else { return }
             guard work == nil, self.proposal?.plan?.id == proposal.plan?.id,
                   self.proposal?.cleanup == proposal.cleanup
             else {
-                return commit()
+                if confirmation.executionIntent == nil { commit() }
+                return
             }
             switch currency {
             case .current:
-                take(proposal)
+                await take(proposal, confirmation: confirmation)
             case .moved:
                 solve()
             case let .withdrawn(packages):
@@ -411,8 +535,11 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
     /// notice, no unneeded package to tick, and the catalogue it was solved
     /// with is still the one there is. Everything else, a solve
     /// still running included, is the sheet's, which `show` presents.
-    private func takeIfPlain() async -> Bool {
-        guard work == nil, failure == nil, let proposal, proposal.notices.isEmpty else { return false }
+    private func takeIfPlain(at revision: Int) async -> Bool {
+        let manager = PackageQueue.shared
+        guard work == nil, failure == nil, let proposal, proposal.notices.isEmpty,
+              proposal.revision == revision, manager.revision == revision, manager.blocked == nil
+        else { return false }
         let (changes, dropped) = diff
         let plain = switch request {
         case let .actions(actions):
@@ -420,6 +547,14 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
                 && Set(actions.map(\.identity)) == [changes[0].package.identity]
         case let .withdraw(identity):
             changes.isEmpty && dropped.map(\.package.identity) == [identity]
+                && manager.actions.contains { $0.identity == identity }
+                && manager.notices.isEmpty
+                && proposal.actions.map(\.identity) == manager.actions.map(\.identity).filter { $0 != identity }
+                && proposal.cleanup == manager.cleanup
+                && proposal.plan.map {
+                    $0.diagnostics.isEmpty && $0.heldBack.isEmpty && $0.migration == nil
+                        && !$0.repairsInstalledSet && !$0.recoveryMode
+                } != false
         case .updateAll, .migrate:
             false
         }
@@ -429,7 +564,14 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         }
         switch await PackageQueue.shared.currency(of: proposal) {
         case .current:
-            guard PackageQueue.shared.commit(proposal) else {
+            // Execute can be tapped while currency is checked without
+            // changing the queue revision. Do not override that intent.
+            if case .withdraw = request,
+               (source as? QueueController)?.canWithdrawWithoutPreview(at: revision) != true
+            {
+                return false
+            }
+            guard manager.commit(proposal) else {
                 solve()
                 return false
             }
@@ -445,15 +587,26 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
     }
 
     /// The proposal becomes the queue, and the sheet leaves.
-    private func take(_ proposal: PackageQueue.Proposal) {
+    private func take(_ proposal: PackageQueue.Proposal, confirmation: QueueConfirmation) async {
+        let navigator = navigationController
+        let interface = source.flatMap { InterfaceHostController.enclosing($0) }
+        let queue = interface?.queuePage
         guard PackageQueue.shared.commit(proposal) else {
             // the queue moved under the sheet; its notification solves again
             return solve()
         }
         // the commit's own notification is not a reason to solve again
         subscriptions.removeAll()
-        dismiss(animated: true)
-        announce()
+        guard let intent = confirmation.executionIntent, let plan = proposal.plan,
+              let navigator, let interface, let queue, let source
+        else {
+            dismiss(animated: true)
+            announce()
+            return
+        }
+        await navigator.dismissFinishing(animated: true)
+        guard interface.queuePage === queue else { return }
+        queue.startQuickOperation(intent, plan: plan, from: source)
     }
 
     /// What the queue was just told, at the top of the screen.
@@ -497,6 +650,8 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
     private func render(animated: Bool) {
         var snapshot = NSDiffableDataSourceSnapshot<Section, Row>()
         let (changes, dropped) = diff
+        let shortcutID = shortcutPlan?.id
+        let offersShortcut = shortcutID != nil
         if let proposal {
             for group in QueueChange.sections(of: changes) {
                 let section = Section.changes(group.kind, dependencies: group.dependencies)
@@ -526,17 +681,38 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
             let unchanged = changes.isEmpty && dropped.isEmpty
             var lines = proposal.notices
             // an emptied queue has nothing left to install
-            if !unchanged, proposal.plan != nil {
+            if !unchanged, proposal.plan != nil, !offersShortcut {
                 lines.append(String(localized: "After you confirm, the queue prepares everything the install needs. Finish installing from the Queue page."))
             }
-            let note = Section.note(lines.joined(separator: "\n\n"))
-            snapshot.appendSections([note])
-            if unchanged {
-                snapshot.appendItems([.unchanged], toSection: note)
+            if offersShortcut {
+                snapshot.appendSections([.queueOnly])
+                snapshot.appendItems([.queueOnly], toSection: .queueOnly)
+            } else {
+                let note = Section.note(lines.joined(separator: "\n\n"))
+                snapshot.appendSections([note])
+                if unchanged {
+                    snapshot.appendItems([.unchanged], toSection: note)
+                }
             }
         }
         snapshot.reconfigureItems(survivingFrom: dataSource.snapshot())
-        dataSource.apply(snapshot, animatingDifferences: animated)
+        if let shortcutID {
+            // A tap cannot authorize the incoming plan while the previous
+            // preview is still leaving the screen.
+            let renderID = UUID()
+            shortcutRender = renderID
+            displayedShortcutPlan = nil
+            shortcutButton.isEnabled = false
+            dataSource.apply(snapshot, animatingDifferences: animated) { [weak self] in
+                guard let self, shortcutRender == renderID, shortcutPlan?.id == shortcutID else { return }
+                displayedShortcutPlan = shortcutID
+                shortcutButton.isEnabled = true
+            }
+        } else {
+            shortcutRender = nil
+            displayedShortcutPlan = nil
+            dataSource.apply(snapshot, animatingDifferences: animated)
+        }
 
         if work == nil {
             spinner.stopAnimating()
@@ -548,9 +724,13 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         let unchanged = changes.isEmpty && dropped.isEmpty
         confirmButton.isEnabled = !unchanged
         // an answer that changes nothing, with a queue to open
-        let button = unchanged && proposal != nil && PackageQueue.shared.plan != nil
-            ? openQueueButton
-            : confirmButton
+        let button = if offersShortcut {
+            shortcutButton
+        } else if unchanged && proposal != nil && PackageQueue.shared.plan != nil {
+            openQueueButton
+        } else {
+            confirmButton
+        }
         if navigationItem.rightBarButtonItem !== button {
             navigationItem.setRightBarButton(button, animated: animated)
         }
@@ -581,6 +761,9 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         case .migrate:
             content = .cell()
             content.attributedText = plainTitle(String(localized: "Migrate and Update"), color: .buttonNormal)
+        case .queueOnly:
+            content = .cell()
+            content.attributedText = plainTitle(String(localized: "Only Add to Queue"), color: .buttonNormal)
         case let .dropped(change):
             content = change.content(icon: icons.icon(of: change.package), details: [], muted: true)
         case let .cleanup(name):
@@ -673,7 +856,7 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
     func tableView(_: UITableView, shouldHighlightRowAt indexPath: IndexPath) -> Bool {
         switch dataSource.itemIdentifier(for: indexPath) {
         case let .cleanup(name): blockers(of: name).isEmpty
-        case .migrate: true
+        case .migrate, .queueOnly: true
         default: false
         }
     }
@@ -685,6 +868,8 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
             toggle(name)
         case .migrate:
             navigationController?.pushViewController(QueueChangeController(request: .migrate), animated: true)
+        case .queueOnly where shortcutPlan != nil:
+            commit()
         default:
             break
         }

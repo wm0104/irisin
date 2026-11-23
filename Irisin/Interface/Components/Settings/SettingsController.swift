@@ -24,6 +24,7 @@ class SettingsController: UITableViewController {
         case accounts
         case repositories
         case packages
+        case backups
         case downloads
         case system
         case support
@@ -121,6 +122,7 @@ class SettingsController: UITableViewController {
             case .accounts: String(localized: "Vendor Accounts")
             case .repositories: String(localized: "Repositories")
             case .packages: String(localized: "Packages")
+            case .backups: String(localized: "Backups")
             case .downloads: String(localized: "Downloads")
             case .system: String(localized: "System")
             case .support: String(localized: "Support")
@@ -130,7 +132,7 @@ class SettingsController: UITableViewController {
         footer.onLicense = { [weak self] in self?.present(next: LicenseController()) }
         tableView.tableFooterView = footer
 
-        for item in repositoryItems() + packageItems() + downloadItems() + systemItems() + supportItems() {
+        for item in repositoryItems() + packageItems() + backupItems() + downloadItems() + systemItems() + supportItems() {
             items[item.id] = item
         }
         applySnapshot(animatingDifferences: false)
@@ -178,6 +180,7 @@ class SettingsController: UITableViewController {
         for (section, list) in [
             (Section.repositories, repositoryItems()),
             (.packages, packageItems()),
+            (.backups, backupItems()),
             (.downloads, downloadItems()),
             (.system, systemItems()),
             (.support, supportItems()),

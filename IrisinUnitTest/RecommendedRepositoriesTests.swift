@@ -52,6 +52,25 @@ struct RecommendedRepositoriesTests {
         }
     }
 
+    @Test func wmRepositoryIsAFlatRecommendationOnRootHideOnly() throws {
+        let directory = try #require(Bundle.main.resourceURL)
+        let address = "https://wm0104.github.io/repo/"
+        let repository = try #require(URL(string: "https://wm0104.github.io/repo"))
+        for majorVersion in 15 ... 27 {
+            let roothideLines = RecommendedRepositories.lines(in: directory, architecture: roothide, majorVersion: majorVersion)
+            #expect(roothideLines.contains(address))
+            let matches = roothideLines.compactMap(RepositorySource.init(line:)).filter { $0.url == repository }
+            #expect(matches == [RepositorySource(url: repository)])
+            #expect(RecommendedRepositories.lines(in: directory, architecture: roothide, majorVersion: majorVersion, forAddSheet: true)
+                == [address])
+
+            for architecture in [rootless, "appletvos-arm64e"] {
+                let lines = RecommendedRepositories.lines(in: directory, architecture: architecture, majorVersion: majorVersion)
+                #expect(!lines.compactMap(RepositorySource.init(line:)).contains { $0.url == repository })
+            }
+        }
+    }
+
     @Test func appleTVRecommendsStripeAndOwnGoal() throws {
         let directory = try #require(Bundle.main.resourceURL)
         for majorVersion in 17 ... 27 {
@@ -67,12 +86,13 @@ struct RecommendedRepositoriesTests {
 
     @Test func managedListWithEntriesReplacesTheArchitectureList() throws {
         try withDirectory { directory in
-            try write([["source": "https://rootless.example"]], named: "default-list-\(rootless)", in: directory)
+            try write([["source": "https://rootless.example", "showWhenAdding": true]], named: "default-list-\(rootless)", in: directory)
             try write([["source": "https://managed.example"]], named: "default-list-managed", in: directory)
             #expect(RecommendedRepositories.lines(in: directory, architecture: rootless, majorVersion: 18)
                 == ["https://managed.example"])
             #expect(RecommendedRepositories.lines(in: directory, architecture: "darwin-arm64", majorVersion: 18)
                 == ["https://managed.example"])
+            #expect(RecommendedRepositories.lines(in: directory, architecture: rootless, majorVersion: 18, forAddSheet: true).isEmpty)
         }
     }
 

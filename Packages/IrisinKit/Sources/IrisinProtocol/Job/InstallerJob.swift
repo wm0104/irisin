@@ -41,6 +41,9 @@ public enum InstallerJob: Codable, Equatable, Sendable {
     /// with the job (`repackDescriptor`). No path crosses the wire, and root
     /// never opens one a client could have swapped.
     case repack(identity: String)
+    /// Configuration-only snapshots travel on descriptor 3, never by root paths.
+    case configurationBackup
+    case configurationRestore(preferences: Bool, sources: Bool)
     /// A transaction another package's program submitted under its own id
     /// (`submitInstall`, `removePackage`). Started by the daemon alone,
     /// never through `run`.
@@ -64,6 +67,8 @@ public enum InstallerJob: Codable, Equatable, Sendable {
         case .enterSafeMode: "enterSafeMode"
         case .prepareUserHome: "prepareUserHome"
         case .repack: "repack"
+        case .configurationBackup: "configurationBackup"
+        case .configurationRestore: "configurationRestore"
         case .external: "external"
         }
     }
@@ -80,6 +85,9 @@ public extension InstallerJob {
     /// path must be absolute, NUL-free and end in `.deb`; whether it exists is
     /// the daemon's question, answered after `realpath`.
     func validate() throws {
+        if case let .configurationRestore(preferences, sources) = self, !preferences && !sources {
+            throw IrisinFailure(code: .invalidRequest)
+        }
         if case let .external(external) = self {
             try external.validate()
             return

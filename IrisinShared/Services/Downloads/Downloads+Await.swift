@@ -8,24 +8,33 @@ extension Downloads {
     func awaitFiles(
         of packages: [Package],
         in plan: UUID,
+        onTransfer: (@MainActor () -> Void)? = nil,
         progress: @MainActor () -> Void = {}
     ) async -> String? {
+        let urls = packages.map { $0.obtainDownloadLink() }
+        var sawTransfer = false
         // ponytail: polls the statuses four times a second; a publisher on
         // the statuses if the tick ever shows
         while !Task.isCancelled, PackageQueue.shared.plan?.id == plan {
-            let statuses = packages.map { (package: $0, status: status(for: $0.obtainDownloadLink())) }
+            let statuses = urls.map { (status: status(for: $0), running: isDownloading($0)) }
+            if let onTransfer, !sawTransfer, urls.contains(where: { hasStartedTransfer(for: $0) }) {
+                sawTransfer = true
+                onTransfer()
+            }
             // a retry's download keeps the old error until it first reports
             if let failed = statuses.first(where: {
-                $0.status?.errorDescription != nil && !isDownloading($0.package.obtainDownloadLink())
+                $0.status?.errorDescription != nil && !$0.running
             })?.status?.errorDescription {
                 return failed
             }
-            if statuses.allSatisfy({ $0.status?.file != nil }) {
+            // A shortcut must wait out cache verification; a previous
+            // attempt can still be reporting a file while it is checked.
+            if statuses.allSatisfy({ $0.status?.file != nil && (onTransfer == nil || !$0.running) }) {
                 return nil
             }
             // the queue starts every download it needs; one that is neither
             // done nor running was stopped from outside
-            if statuses.contains(where: { $0.status?.file == nil && !isDownloading($0.package.obtainDownloadLink()) }) {
+            if statuses.contains(where: { $0.status?.file == nil && !$0.running }) {
                 return String(localized: "The download was interrupted.")
             }
             progress()

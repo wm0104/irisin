@@ -142,6 +142,9 @@ final class DaemonServer: @unchecked Sendable {
             if case .external = job {
                 throw IrisinFailure(code: .invalidRequest)
             }
+            if job.isConfigurationJob, !authenticator.isOwnApplication(client) {
+                throw IrisinFailure(code: .notPermitted)
+            }
             let resolved = try resolve(job)
             // a repack writes into a file the client opened: no path crosses
             // the wire, and nothing here opens one a client could have swapped
@@ -168,7 +171,15 @@ final class DaemonServer: @unchecked Sendable {
     /// The file a repack writes into, a regular one, or nil for every other
     /// job. The caller closes it.
     private func repackOutput(of job: InstallerJob, in message: xpc_object_t) throws -> Int32? {
-        guard case .repack = job else { return nil }
+        guard case .repack = job else {
+            guard job.isConfigurationJob else { return nil }
+            let descriptor = xpc_dictionary_dup_fd(message, IrisinWire.Key.descriptor)
+            do { try job.validateConfigurationDescriptor(descriptor) } catch {
+                if descriptor >= 0 { close(descriptor) }
+                throw error
+            }
+            return descriptor
+        }
         let output = xpc_dictionary_dup_fd(message, IrisinWire.Key.descriptor)
         guard output >= 0 else { throw IrisinFailure(code: .invalidRequest) }
         var info = stat()

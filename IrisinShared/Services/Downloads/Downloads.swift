@@ -36,6 +36,8 @@ final class Downloads {
 
         var file: URL?
         var errorDescription: String?
+        /// This attempt took the network path rather than reusing a cached file.
+        var fetched: Bool = false
 
         /// Never above 1. The downloader fails a transfer that outgrows its
         /// own `Content-Length`; this only guards the guess that stands in
@@ -49,13 +51,14 @@ final class Downloads {
     nonisolated static let shared = Downloads()
 
     /// Where a verified .deb waits for the installer.
-    nonisolated let workingLocation: URL
+    nonisolated var workingLocation: URL? { DownloadDirectory.currentURL }
 
     private var statuses: [URL: Status] = [:]
     /// A download in flight and the token its task clears the slot with.
     private struct Running {
         let token: UUID
         let task: Task<Void, Never>
+        var fetched = false
     }
 
     private var running: [URL: Running] = [:]
@@ -79,31 +82,64 @@ final class Downloads {
         set { completedStore.wrappedValue = (try? JSONEncoder().encode(newValue)) ?? Data() }
     }
 
-    private nonisolated init() {
-        workingLocation = documentsDirectory.appendingPathComponent("Downloads")
+    private nonisolated init() {}
+
+    private let managedStore = Stored(key: "download.managed", defaultValue: Data())
+    private var fileLeases: [URL: DownloadDirectory.Lease] = [:]
+    private var fileGeneration = UUID()
+
+    private var managedFiles: [URL: DownloadDirectory.FileRecord] {
+        get { (try? JSONDecoder().decode([URL: DownloadDirectory.FileRecord].self, from: managedStore.wrappedValue)) ?? [:] }
+        set { managedStore.wrappedValue = (try? JSONEncoder().encode(newValue)) ?? Data() }
     }
 
-    /// Repoints the completed list at this container and drops every entry
-    /// whose file is gone. What is left is hashed the next time it is used.
+    /// Counts only the app's records, never the contents of a user's folder.
+    var managedByteCount: Int64 { managedFiles.values.reduce(0) { $0 + max(0, $1.size) } }
+
+    /// Preserve each actual landing location. Unavailable bookmarks stay on
+    /// record so using the file reports an error instead of silently relocating.
     func load() async {
-        completedFiles = await Self.existing(in: completedFiles.mapValues {
-            workingLocation.appendingPathComponent($0.lastPathComponent)
-        })
+        for (url, record) in managedFiles {
+            if let lease = try? DownloadDirectory.acquire(record.configuration) {
+                fileLeases[url] = lease
+                completedFiles[url] = lease.url.appendingPathComponent(record.url.lastPathComponent)
+            }
+        }
         Dog.shared.join(self, "reporting \(completedFiles.count) download caches")
     }
 
-    /// Every download, finished or not, and the record of them.
-    func clear() {
-        for entry in running.values {
-            entry.task.cancel()
-        }
+    /// Cancels first; late callbacks cannot publish into the cleared generation.
+    /// Legacy records have no ownership evidence and are forgotten, not deleted.
+    @discardableResult
+    func clear() -> Task<Bool, Never> {
+        fileGeneration = UUID()
+        for entry in running.values { entry.task.cancel() }
         running = [:]
         queued = []
         archived = []
         statuses = [:]
+        let records = managedFiles
+        let leases = fileLeases
         completedFiles = [:]
+        managedFiles = [:]
+        fileLeases = [:]
         PartialDownloads.clear()
-        try? FileManager.default.removeItem(at: workingLocation)
+        return Task { await Self.removeRecords(records, leases: leases) }
+    }
+
+    @concurrent
+    private nonisolated static func removeRecords(
+        _ records: [URL: DownloadDirectory.FileRecord],
+        leases: [URL: DownloadDirectory.Lease]
+    ) async -> Bool {
+        var untouched = false
+        for (url, record) in records {
+            do {
+                let lease = try leases[url] ?? DownloadDirectory.acquire(record.configuration)
+                if try !DownloadDirectory.remove(record, lease: lease) { untouched = true }
+            } catch { untouched = true }
+        }
+        return !untouched
     }
 
     func status(for url: URL) -> Status? {
@@ -114,6 +150,11 @@ final class Downloads {
     /// can tell a stall from a download another page cancelled.
     func isDownloading(_ url: URL) -> Bool {
         running[url] != nil
+    }
+
+    /// A running attempt supersedes any status left by its predecessor.
+    func hasStartedTransfer(for url: URL) -> Bool {
+        running[url]?.fetched ?? statuses[url]?.fetched ?? false
     }
 
     func byteFormat(bytes: Int64) -> String {
@@ -162,77 +203,100 @@ final class Downloads {
             // a cancelled task still runs to its end; it must clear only its
             // own slot, never the slot of the download that replaced it
             let token = UUID()
-            running[url] = Running(token: token, task: Task { await self.download(package, from: url, token: token) })
+            let destination = Result { try DownloadDirectory.acquire() }
+            running[url] = Running(token: token, task: Task {
+                await self.download(package, from: url, token: token, destination: destination)
+            })
         }
     }
 
-    private func download(_ package: Package, from url: URL, token: UUID) async {
+    private func download(
+        _ package: Package,
+        from url: URL,
+        token: UUID,
+        destination: Result<DownloadDirectory.Lease, Error>
+    ) async {
         defer {
             if running[url]?.token == token {
                 running[url] = nil
             }
         }
 
-        if let cached = completedFiles[url], FileManager.default.fileExists(atPath: cached.path) {
-            if await Self.verify(package, at: cached) {
-                Dog.shared.join(self, "\(package.identity) is already downloaded to \(cached.path)")
-                let size = (try? FileManager.default.attributesOfItem(atPath: cached.path)[.size] as? Int64) ?? 0
-                publish(Status(
-                    package: package,
-                    url: url,
-                    completedBytes: size,
-                    totalBytes: size,
-                    file: cached
-                ))
+        if let cached = completedFiles[url] {
+            do {
+                let lease = try leaseForFile(url)
+                defer { withExtendedLifetime(lease) {} }
+                let valid = await Self.verify(package, at: cached)
+                guard isCurrent(url, token: token) else { return }
+                if valid {
+                    let size = (try? FileManager.default.attributesOfItem(atPath: cached.path)[.size] as? Int64) ?? 0
+                    publish(Status(package: package, url: url, completedBytes: size, totalBytes: size, file: cached))
+                    return
+                }
+                discard(url)
+            } catch {
+                guard isCurrent(url, token: token) else { return }
+                publish(Status(package: package, url: url, errorDescription: error.localizedDescription))
                 return
             }
-            Dog.shared.join(self, "cached \(package.identity) no longer matches its hash", level: .warning)
-            discard(url)
         }
 
-        // Until the server says how big the file is, use the size the
-        // repository published so the bar does not walk backwards.
         var status = Status(package: package, url: url, totalBytes: publishedSize(of: package))
-        publish(status)
+        guard isCurrent(url, token: token) else { return }
 
         do {
+            let lease = try destination.get()
+            try DownloadDirectory.validate(lease)
+            running[url]?.fetched = true
+            status.fetched = true
+            publish(status)
             let headers = RepositoryCenter.default.networkingHeaders
             for try await event in Downloader.download(from: url, headers: headers) {
+                guard isCurrent(url, token: token) else { return }
                 switch event {
                 case let .progress(completedBytes, totalBytes, bytesPerSecond):
                     status.completedBytes = completedBytes
                     status.bytesPerSecond = bytesPerSecond
-                    if totalBytes > 0 {
-                        status.totalBytes = totalBytes
-                    }
+                    if totalBytes > 0 { status.totalBytes = totalBytes }
                     publish(status)
                 case let .finished(file):
                     status.bytesPerSecond = 0
-                    guard let checkout = await Self.checkout(package, from: file, into: workingLocation) else {
-                        discard(url)
-                        status.errorDescription = String(
-                            localized: "This package failed verification. Try downloading again."
-                        )
-                        publish(status)
+                    let record = try await Self.checkout(package, from: file, lease: lease)
+                    guard isCurrent(url, token: token) else {
+                        try? DownloadDirectory.remove(record, lease: lease)
                         return
                     }
-                    Dog.shared.join(self, "\(package.identity) checked out to \(checkout.path)", level: .info)
-                    completedFiles[url] = checkout
-                    status.file = checkout
+                    completedFiles[url] = record.url
+                    managedFiles[url] = record
+                    fileLeases[url] = lease
+                    status.file = record.url
                     publish(status)
                 }
             }
         } catch {
-            guard !Task.isCancelled else { return }
-            Dog.shared.join(
-                self,
-                "download of \(url.lastPathComponent) failed: \(error.localizedDescription)",
-                level: .error
-            )
+            guard isCurrent(url, token: token) else { return }
+            Dog.shared.join(self, "download of \(url.lastPathComponent) failed: \(error.localizedDescription)", level: .error)
             status.bytesPerSecond = 0
             status.errorDescription = error.localizedDescription
             publish(status)
         }
+    }
+
+    private func isCurrent(_ url: URL, token: UUID) -> Bool {
+        !Task.isCancelled && running[url]?.token == token
+    }
+
+    private func leaseForFile(_ url: URL) throws -> DownloadDirectory.Lease {
+        if let lease = fileLeases[url] { return lease }
+        let configuration: DownloadDirectory.Configuration
+        if let record = managedFiles[url] {
+            configuration = record.configuration
+        } else if let file = completedFiles[url] {
+            configuration = .init(url: file.deletingLastPathComponent(), bookmark: nil)
+        } else { throw DownloadDirectory.Failure.unavailable }
+        let lease = try DownloadDirectory.acquire(configuration)
+        fileLeases[url] = lease
+        return lease
     }
 
     private func publish(_ status: Status) {
@@ -253,10 +317,12 @@ final class Downloads {
     /// so the next request downloads it again.
     func downloadedFile(for package: Package) async -> URL? {
         let url = package.obtainDownloadLink()
-        guard let file = completedFiles[url] else { return nil }
-        guard FileManager.default.fileExists(atPath: file.path),
-              await Self.verify(package, at: file)
-        else {
+        guard let file = completedFiles[url], let lease = try? leaseForFile(url) else { return nil }
+        defer { withExtendedLifetime(lease) {} }
+        let generation = fileGeneration
+        let valid = await Self.verify(package, at: file)
+        guard generation == fileGeneration, completedFiles[url] == file else { return nil }
+        guard valid else {
             Dog.shared.join(self, "dropping unusable download for \(package.identity)", level: .warning)
             discard(url)
             return nil
@@ -265,22 +331,13 @@ final class Downloads {
     }
 
     private func discard(_ url: URL) {
-        if let file = completedFiles.removeValue(forKey: url) {
-            try? FileManager.default.removeItem(at: file)
+        if let record = managedFiles[url], let lease = try? leaseForFile(url) {
+            Task { await Self.removeRecords([url: record], leases: [url: lease]) }
         }
+        managedFiles[url] = nil
+        completedFiles[url] = nil
+        fileLeases[url] = nil
         PartialDownloads.discard(url)
-    }
-
-    @concurrent
-    private nonisolated static func existing(in lookup: [URL: URL]) async -> [URL: URL] {
-        lookup.filter { _, file in
-            var isDirectory = ObjCBool(false)
-            if FileManager.default.fileExists(atPath: file.path, isDirectory: &isDirectory), !isDirectory.boolValue {
-                return true
-            }
-            Dog.shared.join("Downloads", "removing invalid download file: \(file.path)")
-            return false
-        }
     }
 
     /// Does this file still hash to what the repository published? sha256 when
@@ -289,7 +346,7 @@ final class Downloads {
     /// trust.
     @concurrent
     nonisolated static func verify(_ package: Package, at file: URL) async -> Bool {
-        guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else {
+        guard let data = try? DownloadDirectory.readRegular(file) else {
             Dog.shared.join("Downloads", "failed to read \(package.identity) from \(file.path)", level: .error)
             return false
         }
@@ -320,27 +377,27 @@ final class Downloads {
         return true
     }
 
-    /// Checks the finished download and moves it next to the others, under a
-    /// name that says what it is. Nil when it did not hash.
+    /// Repository validation remains before checkout and is repeated on the
+    /// copied bytes, before recording or exposing them to another consumer.
     @concurrent
-    private nonisolated static func checkout(_ package: Package, from source: URL, into directory: URL) async -> URL? {
-        guard await verify(package, at: source) else {
-            try? FileManager.default.removeItem(at: source)
-            return nil
-        }
-        let destination = fileName(for: package, in: directory)
+    private nonisolated static func checkout(
+        _ package: Package,
+        from source: URL,
+        lease: DownloadDirectory.Lease
+    ) async throws -> DownloadDirectory.FileRecord {
+        defer { try? FileManager.default.removeItem(at: source) }
+        guard await verify(package, at: source) else { throw DownloadDirectory.Failure.verification }
+        try Task.checkCancellation()
+        let destination = fileName(for: package, in: lease.url)
+        let record = try DownloadDirectory.checkout(source, named: destination.lastPathComponent, lease: lease)
         do {
-            try FileManager.default.moveItem(at: source, to: destination)
+            guard await verify(package, at: record.url) else { throw DownloadDirectory.Failure.verification }
+            try Task.checkCancellation()
+            return record
         } catch {
-            Dog.shared.join(
-                "Downloads",
-                "checking out \(package.identity) failed: \(error.localizedDescription)",
-                level: .error
-            )
-            try? FileManager.default.removeItem(at: source)
-            return nil
+            try? DownloadDirectory.remove(record, lease: lease)
+            throw error
         }
-        return destination
     }
 
     private nonisolated static let illegalFileNameCharacters: CharacterSet = {
@@ -352,7 +409,6 @@ final class Downloads {
     }()
 
     private nonisolated static func fileName(for package: Package, in directory: URL) -> URL {
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for _ in 0 ... 10 {
             let name = [
                 package.identity,

@@ -34,6 +34,9 @@ public struct ResolutionPlan: Sendable {
     /// failures as warnings; archive, architecture and filesystem safety
     /// checks still apply.
     public let recoveryMode: Bool
+    /// The installed set was already broken, so the solve includes a repair
+    /// even when its only visible changes are new packages.
+    public internal(set) var repairsInstalledSet = false
     /// Updating everything left updates behind that moving installed
     /// packages to another repository would let through: what moves, and
     /// the update of everything once it has. Nil otherwise.

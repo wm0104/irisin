@@ -75,7 +75,15 @@ extension InstalledController {
     @objc
     func removeSelected() {
         let (request, leftOut) = PackageMenu.removal(ofInstalled: selectedPackages)
-        send(request, leavingOut: leftOut)
+        let shortcut: QueueConfirmation.Shortcut?
+        if leftOut.isEmpty, case let .actions(actions) = request,
+           actions.count == 1, case let .remove(identity) = actions[0]
+        {
+            shortcut = .remove(identity)
+        } else {
+            shortcut = nil
+        }
+        send(request, leavingOut: leftOut, shortcut: shortcut)
     }
 
     /// The selected rows that have an update; the rest stay as they are. A
@@ -92,13 +100,15 @@ extension InstalledController {
                 leftOut.append(row)
             }
         }
-        send(updates.isEmpty ? nil : .actions(updates), leavingOut: leftOut)
+        send(updates.isEmpty ? nil : .actions(updates), leavingOut: leftOut, shortcut: leftOut.isEmpty ? .batchUpdate : nil)
     }
 
     /// One request to the change sheet, where the resolver answers for the
     /// whole selection. With nothing to ask for the list stays as it is
     /// edited, and either way what was left out is said.
-    private func send(_ request: QueueChangeController.Request?, leavingOut leftOut: [Package]) {
+    private func send(
+        _ request: QueueChangeController.Request?, leavingOut leftOut: [Package], shortcut: QueueConfirmation.Shortcut? = nil
+    ) {
         if !leftOut.isEmpty {
             SPIndicator.present(
                 title: String(localized: "Some Packages Left Out"),
@@ -108,7 +118,7 @@ extension InstalledController {
         }
         guard let request else { return }
         setEditing(false, animated: true)
-        Task { await QueueChangeController.show(request, from: self) }
+        Task { await QueueChangeController.show(request, from: self, shortcut: shortcut) }
     }
 
     // MARK: - TWO-FINGER SELECTION

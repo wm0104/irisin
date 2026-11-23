@@ -109,7 +109,11 @@ guard let job else {
     exit(EX_DATAERR)
 }
 
-if case .repack = job, !hasRepackFile {
+let requiresDataFile = switch job {
+case .repack, .configurationBackup, .configurationRestore: true
+default: false
+}
+if requiresDataFile, !hasRepackFile {
     emit(.failure(.invalidJob))
     emit(.exit(EX_USAGE))
     exit(EX_USAGE)

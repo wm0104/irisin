@@ -124,9 +124,19 @@ enum PackageMenu {
     /// What the package offers now, in menu order.
     static func eligibleActions(for package: Package) -> [Item] {
         let queued = PackageQueue.shared.isQueued(package.identity)
-        return allMenuActions.filter { action in
-            !(queued && requestActions.contains(action.descriptor)) && action.eligibleForPerform(package)
-        }
+        return allMenuActions.filter { isEligible($0, for: package, queued: queued) }
+    }
+
+    /// A button that represents one menu action observes the same eligibility.
+    static func eligibleAction(_ descriptor: Action, for package: Package) -> Item? {
+        guard let action = allMenuActions.first(where: { $0.descriptor == descriptor }),
+              isEligible(action, for: package, queued: PackageQueue.shared.isQueued(package.identity))
+        else { return nil }
+        return action
+    }
+
+    private static func isEligible(_ action: Item, for package: Package, queued: Bool) -> Bool {
+        !(queued && requestActions.contains(action.descriptor)) && action.eligibleForPerform(package)
     }
 
     /// What goes under Advanced, a submenu at the end.
@@ -202,8 +212,8 @@ enum PackageMenu {
 
     /// Every request in the app goes here: the change sheet shows what it
     /// does to the queue and adds it. Returns once the sheet is on its way in.
-    static func enqueue(_ actions: [ResolutionAction], from host: UIViewController) async {
-        await QueueChangeController.show(.actions(actions), from: host)
+    static func enqueue(_ actions: [ResolutionAction], from host: UIViewController, shortcut: QueueConfirmation.Shortcut? = nil) async {
+        await QueueChangeController.show(.actions(actions), from: host, shortcut: shortcut)
     }
 }
 

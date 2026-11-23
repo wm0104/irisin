@@ -113,8 +113,11 @@ extension SettingsController {
                 icon: "tray.full",
                 title: String(localized: "Downloads Folder"),
                 kind: .disclosure,
-                action: { [weak self] in
-                    self?.openInFila(path: Downloads.shared.workingLocation.path)
+                menu: { [weak self] in
+                    guard let self else { return [] }
+                    return DownloadDirectoryController.menu(from: self) { [weak self] in
+                        self?.dispatchValueUpdate()
+                    }
                 }
             ),
             SettingsItem(
@@ -127,9 +130,7 @@ extension SettingsController {
                     if let cache = try? PartialDownloads.directory.directoryTotalAllocatedSize() {
                         compute += cache
                     }
-                    if let download = try? Downloads.shared.workingLocation.directoryTotalAllocatedSize() {
-                        compute += download
-                    }
+                    compute += Int(Downloads.shared.managedByteCount)
                     if let staged = try? Installer.shared.workingLocation.directoryTotalAllocatedSize() {
                         compute += staged
                     }
@@ -148,14 +149,24 @@ extension SettingsController {
                 menu: { [weak self] in
                     guard let self else { return [] }
                     return confirmMenu(String(localized: "Clear Downloads")) {
-                        Downloads.shared.clear()
-                        try? FileManager.default
-                            .removeItem(at: documentsDirectory.appendingPathComponent("DirectInstallCache"))
-                        if !Installer.shared.inProcessingQueue {
-                            // a running operation reads from here; its files go when it ends
-                            try? FileManager.default.removeItem(at: Installer.shared.workingLocation)
+                        let cleanup = Downloads.shared.clear()
+                        let progress = progressAlert(title: "Clear Downloads", message: "Clearing Downloads…")
+                        self.present(progress, animated: true)
+                        Task { [weak self] in
+                            let removedAll = await cleanup.value
+                            try? FileManager.default.removeItem(at: documentsDirectory.appendingPathComponent("DirectInstallCache"))
+                            if !Installer.shared.inProcessingQueue {
+                                try? FileManager.default.removeItem(at: Installer.shared.workingLocation)
+                            }
+                            await progress.dismissFinishing(animated: true)
+                            self?.dispatchValueUpdate()
+                            if !removedAll {
+                                self?.presentNotice(
+                                    title: "Clear Downloads",
+                                    message: String(localized: "Some download files were changed or unavailable. Irisin left them untouched.")
+                                )
+                            }
                         }
-                        self.dispatchValueUpdate()
                     }
                 }
             ),

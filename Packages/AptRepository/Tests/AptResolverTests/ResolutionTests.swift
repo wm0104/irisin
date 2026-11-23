@@ -325,6 +325,21 @@ struct ResolutionTests {
         }
     }
 
+    @Test func anAlternativeForTheNewRequestCanAlsoBeAnUnrelatedRepair() throws {
+        let installedProvider = pkg("good", "1", installed: true)
+        let brokenConsumer = pkg("consumer", "1", ["depends": "fix"], installed: true)
+        let fix = pkg("fix", "1")
+        let app = pkg("app", "1", ["depends": "good | fix"])
+        let healthy = try solve([app, fix], installed: [installedProvider], actions: [.install(app)])
+        #expect(healthy.install.map(\.identity) == ["app"])
+        #expect(!healthy.repairsInstalledSet)
+
+        let repaired = try solve([app, fix], installed: [installedProvider, brokenConsumer], actions: [.install(app)])
+        #expect(Set(repaired.install.map(\.identity)) == ["app", "fix"])
+        #expect(repaired.requiredBy["fix"]?.contains("app") == true)
+        #expect(repaired.repairsInstalledSet)
+    }
+
     /// With no version that mends it, the request still fails and names
     /// the requirement, as it did: the mend never removes the broken
     /// package, protected or not, and a held package is not updated for it.

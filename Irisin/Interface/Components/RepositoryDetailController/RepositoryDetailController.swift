@@ -341,8 +341,8 @@ class RepositoryDetailController: UIViewController {
 
     // MARK: - MORE
 
-    /// Refresh, then Share as a submenu, then Delete on its own: the
-    /// repository list's context menu, for the repository on this page.
+    /// Refresh and Share are direct actions; the copy and export formats
+    /// are separate from the ordinary share.
     private var moreMenu: UIMenu {
         UIMenu(children: [
             UIMenu(options: .displayInline, children: [
@@ -350,7 +350,34 @@ class RepositoryDetailController: UIViewController {
                     title: String(localized: "Refresh"),
                     image: UIImage(systemName: "arrow.clockwise")
                 ) { [weak self] _ in self?.refresh() },
-                shareMenu,
+                UIAction(
+                    title: String(localized: "Share"),
+                    image: UIImage(systemName: "square.and.arrow.up")
+                ) { [weak self] action in
+                    guard let self else { return }
+                    ExportFile.shareRepository(repo.url, from: self, anchor: PopoverAnchor(sender: action.sender))
+                },
+            ]),
+            UIMenu(options: .displayInline, children: [
+                UIAction(
+                    title: String(localized: "Copy Address"),
+                    image: UIImage(systemName: "link")
+                ) { [weak self] _ in self?.copy(self?.repo.url.absoluteString) },
+                UIAction(
+                    title: String(localized: "Copy APT Source"),
+                    image: UIImage(systemName: "doc.on.doc")
+                ) { [weak self] _ in self?.copy(self?.repo.source.line) },
+            ]),
+            UIMenu(options: .displayInline, children: [
+                UIAction(
+                    title: String(localized: "Export Packages"),
+                    image: UIImage(systemName: "doc.plaintext")
+                ) { [weak self] _ in self?.exportPackages() },
+                ExportFile.exportRepositoryAction(
+                    repo.url,
+                    host: { [weak self] in self },
+                    anchor: { nil }
+                ),
             ]),
             UIAction(
                 title: String(localized: "Delete"),
@@ -383,40 +410,6 @@ class RepositoryDetailController: UIViewController {
         }
     }
 
-    // MARK: - SHARE
-
-    /// The address three ways (copied bare, copied as a sources.list line,
-    /// shared), then the whole catalogue as a file.
-    private var shareMenu: UIMenu {
-        UIMenu(title: String(localized: "Share"), image: UIImage(systemName: "square.and.arrow.up"), children: [
-            UIMenu(options: .displayInline, children: [
-                UIAction(
-                    title: String(localized: "Copy Address"),
-                    image: UIImage(systemName: "link")
-                ) { [weak self] _ in self?.copy(self?.repo.url.absoluteString) },
-                UIAction(
-                    title: String(localized: "Copy APT Source"),
-                    image: UIImage(systemName: "doc.on.doc")
-                ) { [weak self] _ in self?.copy(self?.repo.source.line) },
-                UIAction(
-                    title: String(localized: "Share"),
-                    image: UIImage(systemName: "square.and.arrow.up")
-                ) { [weak self] _ in self?.openShareView() },
-            ]),
-            UIMenu(options: .displayInline, children: [
-                UIAction(
-                    title: String(localized: "Export Packages"),
-                    image: UIImage(systemName: "doc.plaintext")
-                ) { [weak self] _ in self?.exportPackages() },
-                ExportFile.exportRepositoryAction(
-                    repo.url,
-                    host: { [weak self] in self },
-                    anchor: { nil }
-                ),
-            ]),
-        ])
-    }
-
     /// Every package this repository offers, one a line.
     private func exportPackages() {
         // ponytail: a query on the main actor; a share is rare enough
@@ -436,10 +429,6 @@ class RepositoryDetailController: UIViewController {
         guard let text else { return }
         UIPasteboard.general.string = text
         SPIndicator.present(title: String(localized: "Copied"), preset: .done)
-    }
-
-    private func openShareView() {
-        ExportFile.shareRepository(repo.url, from: self, anchor: nil)
     }
 }
 

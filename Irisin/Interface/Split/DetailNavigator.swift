@@ -20,7 +20,7 @@ class DetailNavigator: UINavigationController {
     private let dashboard = SplitDashboardController()
     private let settings = SettingsController()
     private let installed = SplitInstalledController()
-    private let queue = QueueController()
+    let queue = QueueController()
 
     override func viewDidLoad() {
         super.viewDidLoad()

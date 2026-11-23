@@ -21,6 +21,12 @@ extension PackageMenu {
     }
 
     static let resolveInstallRequest: Item.Block = { package, host, _ in
+        await resolveInstallRequest(package, from: host)
+    }
+
+    static func resolveInstallRequest(
+        _ package: Package, from host: UIViewController, shortcut: QueueConfirmation.Shortcut? = nil
+    ) async {
         guard package.isSupportedOnDevice else {
             presentUnsupportedArchitecture(of: package, from: host)
             return
@@ -40,14 +46,12 @@ extension PackageMenu {
         }
         // before a purchase is checked: nobody pays for the record the
         // alert is about to talk them out of
-        guard await keeps(selected, from: host) else { return }
-        if selected.localFileURL != nil {
-            await enqueue([.install(selected)], from: host)
-            return
-        }
-
-        guard selected.isCommercial else {
-            await enqueue([.install(selected)], from: host)
+        let selection = await keepSelection(selected, from: host)
+        guard selection.keep else { return }
+        let allowedShortcut = selection.warned ? nil : shortcut
+        // An imported file is already the user's archive, not a vendor download.
+        guard selected.localFileURL == nil, selected.isCommercial else {
+            await enqueue([.install(selected)], from: host, shortcut: allowedShortcut)
             return
         }
         guard let repoUrl = signedInStore(of: selected, from: host) else { return }
@@ -65,7 +69,7 @@ extension PackageMenu {
         // gone before the next sheet: the host cannot present while it is leaving
         await alert.dismissFinishing(animated: true)
         if case let .purchased(purchased) = check {
-            await enqueue([.install(purchased)], from: host)
+            await enqueue([.install(purchased)], from: host, shortcut: allowedShortcut)
         } else {
             await present(check, from: host)
         }
@@ -76,7 +80,7 @@ extension PackageMenu {
     /// version. Taking a recommendation opens its
     /// page and queues nothing: the request for it is made there, by the
     /// user, with the package in front of them.
-    static func keeps(_ selected: Package, from host: UIViewController) async -> Bool {
+    private static func keepSelection(_ selected: Package, from host: UIViewController) async -> (keep: Bool, warned: Bool) {
         let center = PackageCenter.default
         let advice = PackageSelectionAdvice(
             selected: selected,
@@ -98,12 +102,12 @@ extension PackageMenu {
             switch choice {
             case .recommended:
                 host.present(next: PackageController(package: newer))
-                return false
-            case .anyway: break
-            case .cancel: return false
+                return (false, true)
+            case .anyway: return (true, true)
+            case .cancel: return (false, true)
             }
         }
-        return true
+        return (true, false)
     }
 
     /// The button that goes on as asked, named after the menu item that asked.

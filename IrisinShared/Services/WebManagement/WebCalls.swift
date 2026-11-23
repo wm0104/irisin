@@ -73,7 +73,7 @@ enum WebCalls {
         case "storage":
             return .result(storage())
         case "clearDownloads":
-            return clearDownloads()
+            return await clearDownloads()
         case "exportRepositories":
             return exportRepositories()
         case "importRepositories":
@@ -467,8 +467,8 @@ enum WebCalls {
     /// What Irisin keeps on this device, in bytes: everything in its folder,
     /// and of that the catalogue, the downloads and the logs.
     private static func storage() -> JSONValue {
-        let downloads = [Downloads.shared.workingLocation, PartialDownloads.directory, Installer.shared.workingLocation]
-            .map(allocatedSize(of:)).reduce(0, +)
+        let downloads = [PartialDownloads.directory, Installer.shared.workingLocation]
+            .map(allocatedSize(of:)).reduce(0, +) + Int(clamping: Downloads.shared.managedByteCount)
         let catalogue = ["apt.db", "apt.db-wal", "apt.db-shm"]
             .map { allocatedSize(of: documentsDirectory.appendingPathComponent($0)) }.reduce(0, +)
         let total = allocatedSize(of: documentsDirectory)
@@ -499,11 +499,14 @@ enum WebCalls {
 
     /// What Settings' Clear Downloads does: every download, the partial
     /// ones and the staged copies, never while an operation reads them.
-    private static func clearDownloads() -> WebAnswer {
+    private static func clearDownloads() async -> WebAnswer {
         guard !isBusy else { return .failure(busy) }
-        Downloads.shared.clear()
+        let cleanup = Downloads.shared.clear()
         try? FileManager.default.removeItem(at: documentsDirectory.appendingPathComponent("DirectInstallCache"))
         try? FileManager.default.removeItem(at: Installer.shared.workingLocation)
+        guard await cleanup.value else {
+            return .failure(String(localized: "Some download files were changed or unavailable. Irisin left them untouched."))
+        }
         return .result(storage())
     }
 

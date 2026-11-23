@@ -362,7 +362,8 @@ public enum PackageResolver {
             requiredBy: requiredBy.mapValues { $0.sorted() },
             autoInstalled: additions.filter(isAuto).map { records[$0].name }.sorted(),
             unneeded: unneeded,
-            recoveryMode: false
+            recoveryMode: false,
+            repairsInstalledSet: !broken.isEmpty
         )
     }
 

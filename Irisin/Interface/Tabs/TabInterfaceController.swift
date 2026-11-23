@@ -12,6 +12,8 @@ import UIKit
 class TabInterfaceController: UITabBarController {
     private var subscriptions = Set<AnyCancellable>()
     private let queue = QueueNavigator()
+    var queuePage: QueueController? { queue.viewControllers.first as? QueueController }
+
     /// Every tab, the Queue tab included: `UITab`s from iOS 18, the
     /// controllers before it.
     private var everyTab: [AnyObject] = []
@@ -20,6 +22,7 @@ class TabInterfaceController: UITabBarController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        delegate = self
 
         let dashboard = DashboardNavigator()
         let repositories = RepositoriesNavigator()
@@ -124,32 +127,42 @@ class TabInterfaceController: UITabBarController {
         queue.popToRootViewController(animated: false)
     }
 
-    private var lastSelectedIndex: Int?
-    private var tapCount = 0
-    override func tabBar(_: UITabBar, didSelect _: UITabBarItem) {
-        // double tap to select search bar, or to refresh the repositories; the tab has switched once this returns
-        Task { [self] in
+    private func tabWasTapped(reselecting: Bool) {
+        let page = reselecting ? (selectedViewController as? UINavigationController)?.topViewController : nil
+        // Leave selection and any pop to root to UIKit. Only act on the page
+        // that was already on screen, not a page revealed by that pop.
+        Task { [weak self, weak page] in
+            guard let self else { return }
             updateQueueTab()
-            if lastSelectedIndex == selectedIndex {
-                tapCount += 1
-                if tapCount >= 2 {
-                    lastSelectedIndex = nil
-                    let page = (selectedViewController as? UINavigationController)?.topViewController
-                    if let controller = page as? SearchController {
-                        controller.searchController.searchBar.becomeFirstResponder()
-                    }
-                    if let controller = page as? InstalledController {
-                        controller.searchController.searchBar.becomeFirstResponder()
-                    }
-                    if let controller = page as? RepositoriesController {
-                        controller.refreshFromTab()
-                    }
-                }
-            } else {
-                lastSelectedIndex = selectedIndex
-                tapCount = 0
+            guard let page,
+                  (selectedViewController as? UINavigationController)?.topViewController === page
+            else { return }
+
+            switch page {
+            case let controller as SearchController:
+                controller.searchController.searchBar.becomeFirstResponder()
+            case let controller as InstalledController:
+                controller.searchController.searchBar.becomeFirstResponder()
+            case let controller as RepositoriesController:
+                controller.refreshFromTab()
+            default:
+                break
             }
         }
+    }
+}
+
+extension TabInterfaceController: UITabBarControllerDelegate {
+    @available(iOS 18.0, *)
+    func tabBarController(_ tabBarController: UITabBarController, shouldSelectTab tab: UITab) -> Bool {
+        tabWasTapped(reselecting: tabBarController.selectedTab === tab)
+        return true
+    }
+
+    func tabBarController(_ tabBarController: UITabBarController, shouldSelect viewController: UIViewController) -> Bool {
+        if #available(iOS 18.0, *) { return true }
+        tabWasTapped(reselecting: tabBarController.selectedViewController === viewController)
+        return true
     }
 }
 

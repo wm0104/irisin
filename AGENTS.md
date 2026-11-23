@@ -60,7 +60,10 @@ transaction's journal on disk instead of a pipe: `Documentation/ExternalClients.
   an ordered package transaction (prepared files and identities), rebuild the
   icon cache, register Irisin's own app, respring, bootstrap or boot out
   Irisin's own daemon, reload AirDrop, enter safe mode, make the app's data
-  folder, repack an installed package. The daemon jobs carry
+  folder, repack an installed package, capture or restore configuration.
+  Configuration jobs are Irisin-app-only and carry a validated descriptor,
+  never a root path; restore scopes are preferences and/or repository sources.
+  The daemon jobs carry
   no path or label: the helper derives its own installed plist, and the home
   from the layout (`<jbroot>/var/mobile` on roothide, where icli registers
   apps' HOME and a bootstrap need not have it). The helper validates
@@ -106,10 +109,11 @@ transaction's journal on disk instead of a pipe: `Documentation/ExternalClients.
   after an update of Irisin, or Reload Home Screen when the run, failed or
   not, left the tweak loader's directories different (`TweakInjection`,
   read before the helper starts and after the installed list is read back;
-  a daemon a tweak injects into is the tweak's own to restart). Touch and
-  hold has Skip for Now, and a run Try Again follows keeps the change. An
-  update of Irisin stays Done: registering stops the app, so nothing can
-  follow it. A
+  a daemon a tweak injects into is the tweak's own to restart). Skip for
+  Now below the list and on the button's hold menu closes the page without
+  reloading; a run Try Again follows keeps the change. A removal-only run
+  says Removing while it works. An update of Irisin stays Done:
+  registering stops the app, so nothing can follow it. A
   footnote under the list fades in while the helper finishes after the last row, and the helper's
   lines are on the log page and on the failed package's page, never on the
   list. The

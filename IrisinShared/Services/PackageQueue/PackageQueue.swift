@@ -236,6 +236,9 @@ final class PackageQueue {
         /// A line for each update left behind that `migration` does not
         /// let through.
         let notices: [String]
+        /// Diagnostics the catalogue-wide solve saw before choosing the
+        /// packages that its narrower proposal asks to update.
+        let diagnostics: [String]
         /// The update once the packages that need another repository move
         /// there; nil when moving none lets an update through.
         let migration: Migration?
@@ -288,6 +291,7 @@ final class PackageQueue {
                 notices: plan.heldBack.filter { !released.contains($0) }.map {
                     String(localized: "\($0): kept at the current version by another package or a blocked update.")
                 },
+                diagnostics: plan.diagnostics.map(\.message),
                 migration: migration
             ))
         case let .failure(failure):
@@ -427,7 +431,7 @@ final class PackageQueue {
                 // take effect some later day
                 cleanup: cleanup.intersection(plan.remove.map(\.identity)),
                 plan: plan,
-                notices: notices + Self.notices(of: plan),
+                notices: (notices + Self.notices(of: plan)).uniqued(),
                 revision: revision
             ))
         case let .failure(failure):

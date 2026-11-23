@@ -6,11 +6,9 @@
 import AptRepository
 import UIKit
 
-/// A swipe on any package row: the package menu's own actions, decided by
-/// the same eligibility and run by the same blocks, with one difference.
-/// A request that changes the queue by the swiped package alone joins it
-/// without the change sheet (`QueueChangeController.takesPlainChanges`);
-/// one that brings anything else along still shows the sheet.
+/// A swipe on any package row uses the package menu's own actions.
+/// Installation and removal actions always show the change sheet. A plain
+/// withdrawal can still change the queue without a sheet.
 extension PackageMenu {
     /// What a swipe on a repository's row offers, from the trailing edge
     /// in: what the user came to the list for comes first, Install or
@@ -51,7 +49,7 @@ extension PackageMenu {
                 guard let host else { return }
                 let anchor = anchor()
                 Task {
-                    await QueueChangeController.$takesPlainChanges.withValue(true) {
+                    await QueueChangeController.$takesPlainChanges.withValue(action.descriptor == .dequeue) {
                         await action.block(package, host, anchor)
                     }
                 }

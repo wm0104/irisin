@@ -114,6 +114,33 @@ final class InstallerJobTests: XCTestCase {
         XCTAssertThrowsError(try InstallerJob.decode(JSONSerialization.data(withJSONObject: object)))
     }
 
+    func testConfigurationJobsCodableFixturesAndRestoreScopes() throws {
+        let fixtures: [(String, InstallerJob)] = [
+            (#"{"configurationBackup":{}}"#, .configurationBackup),
+            (#"{"configurationRestore":{"preferences":true,"sources":false}}"#, .configurationRestore(preferences: true, sources: false)),
+            (#"{"configurationRestore":{"preferences":false,"sources":true}}"#, .configurationRestore(preferences: false, sources: true)),
+            (#"{"configurationRestore":{"preferences":true,"sources":true}}"#, .configurationRestore(preferences: true, sources: true)),
+        ]
+        for (payload, job) in fixtures {
+            XCTAssertEqual(try InstallerJob.decode(Data(payload.utf8)), job, payload)
+            XCTAssertEqual(try InstallerJob.decode(job.encoded()), job, payload)
+            XCTAssertEqual(
+                try JSONSerialization.jsonObject(with: job.encoded()) as? NSDictionary,
+                try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? NSDictionary,
+                payload
+            )
+            XCTAssertTrue(job.isConfigurationJob)
+            XCTAssertEqual(job.name, job == .configurationBackup ? "configurationBackup" : "configurationRestore")
+        }
+        let emptyScope = InstallerJob.configurationRestore(preferences: false, sources: false)
+        XCTAssertThrowsError(try emptyScope.validate()) { error in
+            XCTAssertEqual((error as? IrisinFailure)?.code, .invalidRequest)
+        }
+        XCTAssertThrowsError(try InstallerJob.decode(Data(#"{"configurationRestore":{"preferences":false,"sources":false}}"#.utf8))) { error in
+            XCTAssertEqual((error as? IrisinFailure)?.code, .invalidRequest)
+        }
+    }
+
     func testTouchesSelf() {
         XCTAssertTrue(InstallerJob.Transaction(install: [], remove: ["wiki.qaq.irisin"]).touchesSelf)
         XCTAssertTrue(InstallerJob.Transaction(

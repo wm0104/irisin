@@ -34,7 +34,9 @@ extension PackageMenu {
         ),
         .init(
             descriptor: .directInstall,
-            block: resolveInstallRequest,
+            block: { package, host, _ in
+                await resolveInstallRequest(package, from: host, shortcut: .install(package.identity))
+            },
             eligibleForPerform: { package in
                 package.localFileURL != nil && package.isSupportedOnDevice
                     && PackageCenter.default.obtainPackageInstallationInfo(with: package.identity) == nil
@@ -42,7 +44,9 @@ extension PackageMenu {
         ),
         .init(
             descriptor: .install,
-            block: resolveInstallRequest,
+            block: { package, host, _ in
+                await resolveInstallRequest(package, from: host, shortcut: .install(package.identity))
+            },
             eligibleForPerform: { package in
                 guard package.isSupportedOnDevice,
                       package.localFileURL == nil,
@@ -58,7 +62,9 @@ extension PackageMenu {
         ),
         .init(
             descriptor: .update,
-            block: resolveInstallRequest,
+            block: { package, host, _ in
+                await resolveInstallRequest(package, from: host, shortcut: .versionChange(.update, package.identity))
+            },
             eligibleForPerform: { package in
                 if package.obtainDownloadLink() == PackageBadUrl || !package.isSupportedOnDevice {
                     return false
@@ -80,7 +86,9 @@ extension PackageMenu {
         ),
         .init(
             descriptor: .reinstall,
-            block: resolveInstallRequest,
+            block: { package, host, _ in
+                await resolveInstallRequest(package, from: host, shortcut: .versionChange(.reinstall, package.identity))
+            },
             eligibleForPerform: { package in
                 if package.obtainDownloadLink() == PackageBadUrl {
                     return false
@@ -93,7 +101,9 @@ extension PackageMenu {
         ),
         .init(
             descriptor: .downgrade,
-            block: resolveInstallRequest,
+            block: { package, host, _ in
+                await resolveInstallRequest(package, from: host, shortcut: .versionChange(.downgrade, package.identity))
+            },
             eligibleForPerform: { package in
                 if package.obtainDownloadLink() == PackageBadUrl {
                     return false
@@ -109,7 +119,7 @@ extension PackageMenu {
         .init(
             descriptor: .remove,
             block: { package, host, _ in
-                await enqueue([.remove(package.identity)], from: host)
+                await enqueue([.remove(package.identity)], from: host, shortcut: .remove(package.identity))
             },
             eligibleForPerform: { package in
                 PackageCenter

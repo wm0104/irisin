@@ -103,10 +103,15 @@ class UpdateController: UIViewController, UITableViewDelegate {
         .sink { [weak self] _ in self?.reload() }
         .store(in: &subscriptions)
 
-        // the queue taking the updates, or letting one go, turns the button
+        // the queue taking the updates, or letting one go, changes the
+        // available requests both in the bar and in the visible rows
         NotificationCenter.default.publisher(for: .PackageQueueChanged)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.showBarButton(animated: true) }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                showBarButton(animated: true)
+                tableView.visibleCells.forEach { ($0 as? PackageUpdateTableCell)?.refreshUpdateAction() }
+            }
             .store(in: &subscriptions)
     }
 

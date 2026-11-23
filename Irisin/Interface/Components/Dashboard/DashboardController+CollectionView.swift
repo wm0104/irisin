@@ -154,7 +154,8 @@ extension DashboardController {
     /// actions, as every package list swipes.
     func swipeActions(at indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         guard case let .package(_, package) = diffableDataSource.itemIdentifier(for: indexPath) else { return nil }
-        return PackageMenu.swipeConfiguration(for: package, from: self) { [weak self] in
+        let requested = PackageMenu.requestPackage(for: package)
+        return PackageMenu.swipeConfiguration(for: requested, from: self) { [weak self] in
             self?.collectionView.cellForItem(at: indexPath).map { PopoverAnchor($0) }
         }
     }

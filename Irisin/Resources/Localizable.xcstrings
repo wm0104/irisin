@@ -5196,124 +5196,6 @@
         }
       }
     },
-    "After you confirm, the queue prepares everything the install needs. Finish installing from the Queue page." : {
-      "localizations" : {
-        "ar" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "بعد التأكيد، تُجهّز قائمة الانتظار كل ما يحتاجه التثبيت. أكمِل التثبيت من صفحة قائمة الانتظار."
-          }
-        },
-        "bn" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "নিশ্চিত করার পর ইনস্টলের জন্য যা যা দরকার, সারি তা প্রস্তুত করবে। “সারি” পৃষ্ঠা থেকে ইনস্টল সম্পন্ন করুন।"
-          }
-        },
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nach der Bestätigung bereitet die Warteschlange alles für die Installation vor. Schließe die Installation auf der Seite „Warteschlange“ ab."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "After you confirm, the queue prepares everything the install needs. Finish installing from the Queue page."
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Al confirmar, la cola prepara todo lo necesario para la instalación. Termina de instalar desde la página Cola."
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Après confirmation, la file d’attente prépare tout ce dont l’installation a besoin. Terminez l’installation depuis la page « File d’attente »."
-          }
-        },
-        "hi" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "पुष्टि करने के बाद, कतार इंस्टॉल के लिए ज़रूरी सब कुछ तैयार करती है। इंस्टॉल “कतार” पेज से पूरा करें।"
-          }
-        },
-        "id" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Setelah Anda mengonfirmasi, antrean akan menyiapkan semua yang diperlukan untuk instalasi. Selesaikan instalasi dari halaman Antrean."
-          }
-        },
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dopo la conferma, la coda prepara tutto ciò che serve per l’installazione. Completa l’installazione dalla pagina Coda."
-          }
-        },
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "確認すると、キューがインストールに必要なものをすべて準備します。インストールは「キュー」ページで完了してください。"
-          }
-        },
-        "ko" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "확인하면 대기열에서 설치에 필요한 항목을 모두 준비합니다. ‘대기열’ 페이지에서 설치를 완료하십시오."
-          }
-        },
-        "pt-BR" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Após a confirmação, a fila prepara tudo o que a instalação precisa. Conclua a instalação na página Fila."
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "После подтверждения очередь подготовит все необходимое для установки. Завершите установку на странице «Очередь»."
-          }
-        },
-        "sw" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Baada ya kuthibitisha, foleni huandaa kila kitu kinachohitajika kwa usakinishaji. Kamilisha usakinishaji kutoka ukurasa wa Foleni."
-          }
-        },
-        "tr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Onayladıktan sonra kuyruk, yükleme için gereken her şeyi hazırlar. Yüklemeyi Kuyruk sayfasından tamamlayın."
-          }
-        },
-        "vi" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sau khi bạn xác nhận, hàng đợi sẽ chuẩn bị mọi thứ cần để cài đặt. Hãy hoàn tất cài đặt trong trang Hàng đợi."
-          }
-        },
-        "yo" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lẹ́yìn tí o bá jẹ́rìí sí i, ìtòsẹ́ náà yóò múra gbogbo ohun tí ìfisórí ẹ̀rọ nílò sílẹ̀. Parí fífi sórí ẹ̀rọ láti ojú ìwé Ìtòsẹ́."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "确认后，队列会准备安装所需的一切。请前往“队列”页面完成安装。"
-          }
-        },
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "確認後，佇列會準備安裝所需的一切。請到「佇列」頁面完成安裝。"
-          }
-        }
-      }
-    },
     "Agree and Create Backup" : {
       "localizations" : {
         "ar" : {
@@ -27428,6 +27310,124 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "執行"
+          }
+        }
+      }
+    },
+    "Execute Queue" : {
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "تنفيذ قائمة الانتظار"
+          }
+        },
+        "bn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "সারি চালান"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Warteschlange ausführen"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Execute Queue"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ejecutar la cola"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Exécuter la file d’attente"
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "कतार चलाएँ"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jalankan Antrean"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esegui la coda"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "キューを実行"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "대기열 실행"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Executar fila"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выполнить очередь"
+          }
+        },
+        "sw" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tekeleza Foleni"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kuyruğu Yürüt"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Thực hiện hàng đợi"
+          }
+        },
+        "yo" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ṣi Ìtòsẹ́"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "执行队列"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "執行佇列"
           }
         }
       }

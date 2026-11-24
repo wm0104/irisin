@@ -12,7 +12,7 @@ import UIKit
 /// pages under it give up the bar's height as safe area while it is there,
 /// so a list's last row scrolls clear of it. The count is the Queue tab's
 /// badge, from the same notification.
-final class QueueBarDock {
+final class QueueBarDock: NSObject, UIContextMenuInteractionDelegate {
     private let bar = QueueBarView()
     private weak var host: UIViewController?
     private let pages: () -> [UIViewController]
@@ -46,6 +46,7 @@ final class QueueBarDock {
     init(host: UIViewController, centeredIn guide: UILayoutGuide, pages: @escaping () -> [UIViewController]) {
         self.host = host
         self.pages = pages
+        super.init()
 
         host.view.addSubview(bar)
         bar.snp.makeConstraints { x in
@@ -64,6 +65,7 @@ final class QueueBarDock {
             guard let host else { return }
             InterfaceHostController.enclosing(host)?.openQueue()
         }, for: .touchUpInside)
+        bar.addInteraction(UIContextMenuInteraction(delegate: self))
         // the bar grows with the text size, and the room under it follows
         bar.heightChanged = { [weak self] in self?.makeRoom() }
 
@@ -74,6 +76,33 @@ final class QueueBarDock {
             .sink { [weak self] _ in self?.update(animated: true) }
             .store(in: &subscriptions)
         update(animated: false)
+    }
+
+    func contextMenuInteraction(
+        _: UIContextMenuInteraction, configurationForMenuAtLocation _: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        guard let host, let interface = InterfaceHostController.enclosing(host),
+              let queue = interface.queuePage, queue.canExecuteQueued(from: host),
+              let planID = PackageQueue.shared.plan?.id
+        else { return nil }
+        let revision = PackageQueue.shared.revision
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak host, weak queue] _ in
+            UIMenu(children: [
+                UIAction(title: String(localized: "Open Queue"), image: UIImage(systemName: "tray.full")) { _ in
+                    guard let host else { return }
+                    InterfaceHostController.enclosing(host)?.openQueue()
+                },
+                UIAction(
+                    title: String(localized: "Execute Queue"),
+                    image: UIImage(systemName: "play.fill")
+                ) { _ in
+                    guard let host, let queue, PackageQueue.shared.plan?.id == planID,
+                          PackageQueue.shared.revision == revision
+                    else { return }
+                    queue.executeQueued(from: host)
+                },
+            ])
+        }
     }
 
     private func update(animated: Bool) {

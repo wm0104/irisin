@@ -483,6 +483,30 @@ final class QueueController: UIViewController, UITableViewDelegate {
 
     // MARK: - Download and execute
 
+    /// A separate action from Open Queue. A stale menu cannot authorize a
+    /// new plan: check the current queue and its catalogue before following it.
+    func canExecuteQueued(from source: UIViewController) -> Bool {
+        InterfaceHostController.enclosing(source)?.queuePage === self
+            && !committed && quickOperation == nil && staging == nil && failure == nil
+            && stage != .downloadFailed && stage != .stagingFailed && stage != .blocked
+            && !Installer.shared.inProcessingQueue && Self.canPresent(from: source)
+            && QueueConfirmation.offersQueuedExecution(PackageQueue.shared)
+    }
+
+    func executeQueued(from source: UIViewController) {
+        guard canExecuteQueued(from: source), let plan = PackageQueue.shared.plan else { return }
+        let revision = PackageQueue.shared.revision
+        Task { [weak self, weak source] in
+            let currency = (try? await PackageQueue.currency(of: plan, index: PackageCenter.default.index)) ?? .moved
+            guard let self, let source, currency == .current,
+                  PackageQueue.shared.revision == revision,
+                  PackageQueue.shared.plan?.id == plan.id,
+                  canExecuteQueued(from: source)
+            else { return }
+            startQuickOperation(QuickOperationIntent(plan: plan.id), plan: plan, from: source)
+        }
+    }
+
     /// The preview authorizes one plan. Use this same controller to follow
     /// downloads even when its page does not need to open.
     func startQuickOperation(_ intent: QuickOperationIntent, plan: ResolutionPlan, from source: UIViewController) {

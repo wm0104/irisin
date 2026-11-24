@@ -57,6 +57,24 @@ class UpdateController: UIViewController, UITableViewDelegate {
         target: self,
         action: #selector(openQueue)
     )
+    private lazy var executeQueueMenu = UIBarButtonItem(
+        image: UIImage(systemName: "ellipsis"),
+        menu: UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+            guard let self, let queue = InterfaceHostController.enclosing(self)?.queuePage,
+                  queue.canExecuteQueued(from: self), let plan = PackageQueue.shared.plan
+            else { return completion([]) }
+            let revision = PackageQueue.shared.revision
+            completion([UIAction(
+                title: String(localized: "Execute Queue"),
+                image: UIImage(systemName: "play.fill")
+            ) { [weak self, weak queue] _ in
+                guard let self, let queue, PackageQueue.shared.plan?.id == plan.id,
+                      PackageQueue.shared.revision == revision
+                else { return }
+                queue.executeQueued(from: self)
+            }])
+        }])
+    )
 
     init(notificationCenter: NotificationCenter = .default) {
         self.notificationCenter = notificationCenter
@@ -122,6 +140,11 @@ class UpdateController: UIViewController, UITableViewDelegate {
         reload()
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        showBarButton(animated: false)
+    }
+
     /// Waits for the first list, up to `budget`, so the page is pushed with
     /// its rows in place; a slower list animates in after the push.
     func prepare(within budget: TimeInterval) async {
@@ -156,8 +179,10 @@ class UpdateController: UIViewController, UITableViewDelegate {
             row.candidate.latestVersion.map { PackageQueue.shared.coversUpdate(of: row.installed.identity, to: $0) } == true
         }
         let button = queued ? openQueueButton : updateAllButton
-        if navigationItem.rightBarButtonItem !== button {
-            navigationItem.setRightBarButton(button, animated: animated)
+        let canExecute = InterfaceHostController.enclosing(self)?.queuePage?.canExecuteQueued(from: self) == true
+        let buttons = canExecute ? [button, executeQueueMenu] : [button]
+        if navigationItem.rightBarButtonItems != buttons {
+            navigationItem.setRightBarButtonItems(buttons, animated: animated)
         }
     }
 

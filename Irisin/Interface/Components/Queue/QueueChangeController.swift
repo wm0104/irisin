@@ -483,14 +483,14 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
             }
     }
 
-    private func commit(_ confirmation: QueueConfirmation = .queueOnly) {
+    private func commit(_ confirmation: QueueConfirmation = .queueOnly, opensQueue: Bool = true) {
         guard confirming == nil, confirmation.accepts(plan: shortcutPlan?.id) else { return }
         if let work {
             // Ordinary Confirm may follow a tick's new answer. A shortcut
             // must instead wait for the user to confirm the new preview.
             Task { [weak self] in
                 await work.value
-                self?.commit()
+                self?.commit(opensQueue: opensQueue)
             }
             return
         }
@@ -508,12 +508,12 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
             guard work == nil, self.proposal?.plan?.id == proposal.plan?.id,
                   self.proposal?.cleanup == proposal.cleanup
             else {
-                if confirmation.executionIntent == nil { commit() }
+                if confirmation.executionIntent == nil { commit(opensQueue: opensQueue) }
                 return
             }
             switch currency {
             case .current:
-                await take(proposal, confirmation: confirmation)
+                await take(proposal, confirmation: confirmation, opensQueue: opensQueue)
             case .moved:
                 solve()
             case let .withdrawn(packages):
@@ -587,7 +587,7 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
     }
 
     /// The proposal becomes the queue, and the sheet leaves.
-    private func take(_ proposal: PackageQueue.Proposal, confirmation: QueueConfirmation) async {
+    private func take(_ proposal: PackageQueue.Proposal, confirmation: QueueConfirmation, opensQueue: Bool) async {
         let navigator = navigationController
         let interface = source.flatMap { InterfaceHostController.enclosing($0) }
         let queue = interface?.queuePage
@@ -600,7 +600,12 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         guard let intent = confirmation.executionIntent, let plan = proposal.plan,
               let navigator, let interface, let queue, let source
         else {
-            dismiss(animated: true)
+            if opensQueue, proposal.plan != nil, let navigator, let interface, let queue {
+                await navigator.dismissFinishing(animated: true)
+                if interface.queuePage === queue { interface.selectQueue() }
+            } else {
+                dismiss(animated: true)
+            }
             announce()
             return
         }
@@ -679,11 +684,7 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
                 snapshot.appendItems(rows.map(Row.move) + [.migrate], toSection: .migration)
             }
             let unchanged = changes.isEmpty && dropped.isEmpty
-            var lines = proposal.notices
-            // an emptied queue has nothing left to install
-            if !unchanged, proposal.plan != nil, !offersShortcut {
-                lines.append(String(localized: "After you confirm, the queue prepares everything the install needs. Finish installing from the Queue page."))
-            }
+            let lines = proposal.notices
             if offersShortcut {
                 snapshot.appendSections([.queueOnly])
                 snapshot.appendItems([.queueOnly], toSection: .queueOnly)
@@ -724,6 +725,24 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         let unchanged = changes.isEmpty && dropped.isEmpty
         confirmButton.isEnabled = !unchanged
         // an answer that changes nothing, with a queue to open
+        let queuedPlan = PackageQueue.shared.plan?.id
+        let queuedRevision = PackageQueue.shared.revision
+        openQueueButton.menu = if unchanged, proposal != nil, queuedPlan != nil,
+                                  QueueConfirmation.offersQueuedExecution(PackageQueue.shared) {
+            UIMenu(children: [UIAction(title: String(localized: "Execute Queue"), image: UIImage(systemName: "play.fill")) { [weak self] _ in
+                guard let self, let source, let navigator = navigationController,
+                      let queue = InterfaceHostController.enclosing(source)?.queuePage,
+                      PackageQueue.shared.plan?.id == queuedPlan, PackageQueue.shared.revision == queuedRevision
+                else { return }
+                Task { [weak source, weak queue] in
+                    await navigator.dismissFinishing(animated: true)
+                    guard let source, let queue,
+                          PackageQueue.shared.plan?.id == queuedPlan, PackageQueue.shared.revision == queuedRevision
+                    else { return }
+                    queue.executeQueued(from: source)
+                }
+            }])
+        } else { nil }
         let button = if offersShortcut {
             shortcutButton
         } else if unchanged && proposal != nil && PackageQueue.shared.plan != nil {
@@ -869,7 +888,7 @@ final class QueueChangeController: UIViewController, UITableViewDelegate {
         case .migrate:
             navigationController?.pushViewController(QueueChangeController(request: .migrate), animated: true)
         case .queueOnly where shortcutPlan != nil:
-            commit()
+            commit(opensQueue: false)
         default:
             break
         }

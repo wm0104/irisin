@@ -17,7 +17,22 @@ extension PackageBannerView {
         UIMenu(children: [
             UIDeferredMenuElement.uncached { [weak self] completion in
                 guard let self, let host = parentViewController else { return completion([]) }
-                completion(PackageMenu.menuElements(for: package, from: host))
+                var actions = PackageMenu.menuElements(for: package, from: host)
+                if opensQueue, let queue = InterfaceHostController.enclosing(host)?.queuePage,
+                   queue.canExecuteQueued(from: host), let plan = PackageQueue.shared.plan
+                {
+                    let revision = PackageQueue.shared.revision
+                    actions.append(UIAction(
+                        title: String(localized: "Execute Queue"),
+                        image: UIImage(systemName: "play.fill")
+                    ) { [weak host, weak queue] _ in
+                        guard let host, let queue, PackageQueue.shared.plan?.id == plan.id,
+                              PackageQueue.shared.revision == revision
+                        else { return }
+                        queue.executeQueued(from: host)
+                    })
+                }
+                completion(actions)
             },
         ])
     }
